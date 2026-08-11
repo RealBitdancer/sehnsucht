@@ -1,0 +1,143 @@
+# Creates a GitHub Release when a version tag (v*) is pushed. The release notes are the
+# tag's section of CHANGELOG.md, so the release page repeats what the changelog already
+# says instead of inventing a second history. Binaries for every supported target are
+# built and attached, so the release is usable without a Zig toolchain.
+#
+# mlugg/setup-zig declares node20 and therefore draws a deprecation annotation. Do not
+# spend time bumping it: every published tag through v2.2.1 and its main branch declare
+# the same, so no version fixes it. The runner already forces these actions onto node24,
+# which makes the notice cosmetic, and the only real alternative is installing Zig from a
+# run step, trading the action's toolchain and build caching for a quieter log.
+
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  # Manual runs build and package every target without publishing anything,
+  # so the matrix can be exercised on a branch before a tag makes it public.
+  # The archives land on the run's summary page as workflow artifacts.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  # Tags do not trigger the per-OS build workflows, so gate the release on
+  # its own test run instead of publishing an untested commit.
+  test:
+    name: gate on tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Test
+        run: zig build test
+
+  # Every target cross-compiles from Linux, macOS included, because build.zig
+  # gives the executable its own framework search path from the lazy system_sdk
+  # package. A macOS runner would not help on its own: an explicit -Dtarget makes
+  # Zig treat the build as cross-compilation and skip the xcrun SDK probe, so it
+  # fails there for the same reason it fails anywhere else.
+  #
+  # Linux targets pin glibc 2.28 (RHEL 8, Debian 10, Ubuntu 18.04) so the
+  # binaries run on distributions older than the runner. musl is deliberately
+  # absent: miniaudio reaches ALSA and PulseAudio through dlopen, which finds
+  # nothing in the statically linked binary Zig produces for musl, so a musl
+  # build would run silently instead of failing loudly.
+  build:
+    name: build ${{ matrix.asset }}
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { asset: x86_64-linux,    target: x86_64-linux-gnu.2.28,  bin: sehnsucht,     archive: tar.gz }
+          - { asset: aarch64-linux,   target: aarch64-linux-gnu.2.28, bin: sehnsucht,     archive: tar.gz }
+          - { asset: x86_64-macos,    target: x86_64-macos,           bin: sehnsucht,     archive: tar.gz }
+          - { asset: aarch64-macos,   target: aarch64-macos,          bin: sehnsucht,     archive: tar.gz }
+          - { asset: x86_64-windows,  target: x86_64-windows,         bin: sehnsucht.exe, archive: zip }
+          - { asset: aarch64-windows, target: aarch64-windows,        bin: sehnsucht.exe, archive: zip }
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Build
+        run: zig build -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe -Dstrip=true --prefix out
+
+      # The archive carries the licensing and the sample playlists, so an
+      # extracted release plays something without a clone of the repository.
+      - name: Package
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            zon=$(sed -n 's/.*\.version = "\([^"]*\)".*/\1/p' build.zig.zon)
+            version="$zon-dev-$(git rev-parse --short HEAD)"
+          fi
+          dir="sehnsucht-$version-${{ matrix.asset }}"
+          mkdir -p "$dir" dist
+          cp "out/bin/${{ matrix.bin }}" "$dir/"
+          cp README.md LICENSE CHANGELOG.md THIRD_PARTY_LICENSES.md "$dir/"
+          cp -r playlists "$dir/"
+          if [ "${{ matrix.archive }}" = zip ]; then
+            zip -qr "dist/$dir.zip" "$dir"
+          else
+            tar czf "dist/$dir.tar.gz" "$dir"
+          fi
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/
+          if-no-files-found: error
+
+  # Skipped on manual runs, which is what makes a dry run a dry run. Everything
+  # above it has already done the work worth testing.
+  release:
+    name: create release
+    needs: build
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Extract changelog section
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v ver="$version" '
+            index($0, "## [" ver "]") == 1 { found = 1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md > notes.md
+          if ! [ -s notes.md ]; then
+            echo "CHANGELOG.md has no section for $version" >&2
+            exit 1
+          fi
+
+      - name: Checksums
+        run: cd dist && sha256sum sehnsucht-* > SHA256SUMS
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "sehnsucht $GITHUB_REF_NAME" \
+            --notes-file notes.md \
+            dist/*

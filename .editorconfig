@@ -1,0 +1,23 @@
+# EditorConfig: https://editorconfig.org
+# Top-most config; editors stop searching parent directories here.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+# Zig's canonical style (matches `zig fmt`): 4-space indent, no tabs.
+[*.{zig,zon}]
+indent_style = space
+indent_size = 4
+
+[*.{yml,yaml,json}]
+indent_style = space
+indent_size = 2
+
+# Don't enforce trailing-whitespace trimming in Markdown:
+# two trailing spaces are a meaningful line break.
+[*.md]
+trim_trailing_whitespace = false

@@ -1,0 +1,36 @@
+# Normalize line endings: Git stores LF, checks out native on each platform.
+# Prevents CRLF/LF churn in diffs when collaborating across Windows/macOS/Linux.
+* text=auto eol=lf
+
+# Source and text files: always LF, even on Windows checkouts.
+*.zig   text eol=lf
+*.zon   text eol=lf
+*.md    text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.json  text eol=lf
+*.txt   text eol=lf
+
+# Binary files: never normalize, never diff as text.
+*.png   binary
+*.jpg   binary
+*.gif   binary
+*.ico   binary
+*.zip   binary
+*.tar   binary
+*.gz    binary
+*.wasm  binary
+
+# OPL music formats: treat as binary if a local fixture is ever added.
+*.hsc    binary
+*.vgm    binary
+*.vgz    binary
+*.dro    binary
+*.imf    binary
+*.wlf    binary
+*.adlib  binary
+*.mus    binary
+*.op2    binary
+# Playlists are hand-written text: normalize to LF and keep them reviewable.
+*.m3u   text eol=lf
+*.m3u8  text eol=lf

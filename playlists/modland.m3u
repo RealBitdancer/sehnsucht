@@ -1,0 +1,73 @@
+#EXTM3U
+#PLAYLIST:Modland
+# sehnsucht remote demo: curated #EXTINF titles over https.
+# Hosts: Modland Ad Lib tree and the OPL Archive (VGZ).
+
+# --- DRO / HSC / IMF / ADLIB / VGZ ---
+#EXTINF:-1,Dune (DOSBox DRO)
+https://modland.com/pub/modules/Ad%20Lib/DOSBox/-%20unknown/dune1.dro
+#EXTINF:-1,Hannes Seifert - Ad the Lib Groove
+https://modland.com/pub/modules/Ad%20Lib/HSC%20AdLib%20Composer/Hannes%20Seifert/ad%20the%20lib%20groove.hsc
+#EXTINF:-1,Hannes Seifert - Shoot 'em up
+https://modland.com/pub/modules/Ad%20Lib/HSC%20AdLib%20Composer/Hannes%20Seifert/shoot'em%20up.hsc
+#EXTINF:-1,Hannes Seifert - Rocky Margarine
+https://modland.com/pub/modules/Ad%20Lib/HSC%20AdLib%20Composer/Hannes%20Seifert/rocky%20margarine.hsc
+#EXTINF:-1,Bobby Prince - Bio Menace Theme
+https://modland.com/pub/modules/Ad%20Lib/Apogee/Bobby%20Prince/Bio%20Menace/biotheme.imf
+#EXTINF:-1,Bobby Prince - Get Them (Wolfenstein 3D)
+https://modland.com/pub/modules/Ad%20Lib/Apogee/Bobby%20Prince/Wolfenstein%203D/getthem.imf
+#EXTINF:-1,Bobby Prince - Searching (Wolfenstein 3D)
+https://modland.com/pub/modules/Ad%20Lib/Apogee/Bobby%20Prince/Wolfenstein%203D/searchn.imf
+#EXTINF:-1,Get Them (ADLIB metadata wrapper)
+https://modland.com/pub/modules/Ad%20Lib/Martin%20Fernandez/-%20unknown/Wolfenstein%203D/getthem.adlib
+# Doom OPL covers from the OPL Archive (not commercial game rips).
+#EXTINF:-1,Doom - At Doom's Gate (E1M1)
+https://opl.wafflenet.com/vgm/Weeppiko/Doom%20-%20At%20Doom's%20Gate%20(E1M1).vgz
+#EXTINF:-1,Doom - Dark Halls (E1M3)
+https://opl.wafflenet.com/vgm/brickblock369/Doom%20-%20Dark%20Halls%20(E1M3).vgz
+#EXTINF:-1,Doom - Kitchen Ace (And Taking Names) (E1M4)
+https://opl.wafflenet.com/vgm/AmigaX/Doom%20-%20Kitchen%20Ace%20(And%20Taking%20Names)%20(E1M4).vgz
+#EXTINF:-1,Doom - Donna to the Rescue (E3M2)
+https://opl.wafflenet.com/vgm/EpicTyphlosion/Doom%20-%20Donna%20to%20the%20Rescue%20(E3M2).vgz
+#EXTINF:-1,Doom II - Running From Evil (MAP01)
+https://opl.wafflenet.com/vgm/kvee/Doom%20II%20-%20Running%20From%20Evil%20(MAP01).vgz
+#EXTINF:-1,Ad Lib, Inc - All of Us
+https://opl.wafflenet.com/vgm/Ad%20Lib,%20Inc/All%20of%20Us.vgz
+#EXTINF:-1,Ad Lib, Inc - Art Deco
+https://opl.wafflenet.com/vgm/Ad%20Lib,%20Inc/Art%20Deco.vgz
+
+# --- CMF (Creative Music File) ---
+#EXTINF:-1,Dan Froelich - Bizzy
+https://modland.com/pub/modules/Ad%20Lib/Creative%20Music%20File/Dan%20Froelich/bizzy.cmf
+#EXTINF:-1,Dan Froelich - Brix (sfile1)
+https://modland.com/pub/modules/Ad%20Lib/Creative%20Music%20File/Dan%20Froelich/brix%20-%20sfile1.cmf
+#EXTINF:-1,Dan Froelich - Cautious
+https://modland.com/pub/modules/Ad%20Lib/Creative%20Music%20File/Dan%20Froelich/cautious.cmf
+#EXTINF:-1,Robert Allen - Traffic Department 2192 (Climax)
+https://modland.com/pub/modules/Ad%20Lib/Creative%20Music%20File/Robert%20Allen/traffic%20department%202192%20-%20climax.cmf
+#EXTINF:-1,Robert Allen - Traffic Department 2192 (Hangar)
+https://modland.com/pub/modules/Ad%20Lib/Creative%20Music%20File/Robert%20Allen/traffic%20department%202192%20-%20hangar.cmf
+#EXTINF:-1,Tu Nai-Ti - Baoxiao Chuji (ar2)
+https://modland.com/pub/modules/Ad%20Lib/Creative%20Music%20File/Tu%20Nai-Ti/baoxiao%20chuji%20-%20ar2.cmf
+
+# --- RAW (Rdos / RAC raw OPL capture) ---
+#EXTINF:-1,Rob Hubbard - Budokan (Title)
+https://modland.com/pub/modules/Ad%20Lib/Raw%20OPL%20Capture/Rob%20Hubbard/budokan%20-%20title.raw
+#EXTINF:-1,Rob Hubbard - Budokan (End)
+https://modland.com/pub/modules/Ad%20Lib/Raw%20OPL%20Capture/Rob%20Hubbard/budokan%20-%20end.raw
+#EXTINF:-1,Aubrey Hodges - Freddy Pharkas (Ballad)
+https://modland.com/pub/modules/Ad%20Lib/Raw%20OPL%20Capture/Aubrey%20Hodges/freddy%20pharkas%20-%20ballad.raw
+#EXTINF:-1,Aubrey Hodges - Freddy Pharkas (Badwater)
+https://modland.com/pub/modules/Ad%20Lib/Raw%20OPL%20Capture/Aubrey%20Hodges/freddy%20pharkas%20-%20badwater.raw
+
+# --- RAD (Reality Adlib Tracker) ---
+#EXTINF:-1,Hannes Seifert - Jazz Pop Mix
+https://modland.com/pub/modules/Ad%20Lib/Reality%20AdLib%20Tracker/Hannes%20Seifert/jazz%20pop%20mix.rad
+#EXTINF:-1,Hannes Seifert - Hubbard
+https://modland.com/pub/modules/Ad%20Lib/Reality%20AdLib%20Tracker/Hannes%20Seifert/hubbard.rad
+#EXTINF:-1,Shiru - Brag4
+https://modland.com/pub/modules/Ad%20Lib/Reality%20AdLib%20Tracker/Shiru/brag4.rad
+#EXTINF:-1,Farmer - Ad It Up! Part 1
+https://modland.com/pub/modules/Ad%20Lib/Reality%20AdLib%20Tracker/Farmer/ad%20it%20up!%20part%201.rad
+#EXTINF:-1,Farmer - Adlib Attack (Toz System Mix)
+https://modland.com/pub/modules/Ad%20Lib/Reality%20AdLib%20Tracker/Farmer/adlib%20attack%20(toz%20system%20mix).rad

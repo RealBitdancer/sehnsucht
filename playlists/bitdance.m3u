@@ -1,0 +1,108 @@
+#EXTM3U
+#PLAYLIST:Bitdance
+# Retro game OPL set from Modland (IMF/DRO/HSC) and the OPL Archive (VGZ covers).
+# IMF #EXTINF rate= tags use the original game tick rates (VGMPF):
+#   560 Hz  Bio Menace, Commander Keen, Monster Bash, Catacomb 3-D
+#   700 Hz  Cosmo's Cosmic Adventure, Wolfenstein 3D, Spear of Destiny, Blake Stone
+#   280 Hz  Duke Nukem II
+
+#EXTINF:-1 rate=560,Bio Menace - Theme
+https://modland.com/pub/modules/Ad%20Lib/Apogee/Bobby%20Prince/Bio%20Menace/biotheme.imf
+#EXTINF:-1 rate=560,Bio Menace - Rockinit
+https://modland.com/pub/modules/Ad%20Lib/Apogee/Bobby%20Prince/Bio%20Menace/rockinit.imf
+#EXTINF:-1 rate=560,Commander Keen - Too Hot to Handle
+https://modland.com/pub/modules/Ad%20Lib/Apogee/Bobby%20Prince/Commander%20Keen%204-6/toohot.imf
+#EXTINF:-1 rate=560,Commander Keen - Metal
+https://modland.com/pub/modules/Ad%20Lib/Apogee/Bobby%20Prince/Commander%20Keen%204-6/metal.imf
+#EXTINF:-1 rate=560,Commander Keen - Spacfunk
+https://modland.com/pub/modules/Ad%20Lib/Apogee/Bobby%20Prince/Commander%20Keen%204-6/spacfunk.imf
+#EXTINF:-1 rate=700,Cosmo's Cosmic Adventure - Boss
+https://modland.com/pub/modules/Ad%20Lib/Apogee/Bobby%20Prince/Cosmo%27s%20Cosmic%20Adventure/mboss.imf
+#EXTINF:-1 rate=700,Cosmo's Cosmic Adventure - Caves
+https://modland.com/pub/modules/Ad%20Lib/Apogee/Bobby%20Prince/Cosmo%27s%20Cosmic%20Adventure/mcaves.imf
+#EXTINF:-1 rate=700,Wolfenstein 3D - Get Them
+https://modland.com/pub/modules/Ad%20Lib/Apogee/Bobby%20Prince/Wolfenstein%203D/getthem.imf
+#EXTINF:-1 rate=700,Wolfenstein 3D - Searching
+https://modland.com/pub/modules/Ad%20Lib/Apogee/Bobby%20Prince/Wolfenstein%203D/searchn.imf
+#EXTINF:-1 rate=700,Wolfenstein 3D - Wondering About My Loved Ones
+https://modland.com/pub/modules/Ad%20Lib/Apogee/Bobby%20Prince/Wolfenstein%203D/wonderin.imf
+#EXTINF:-1 rate=700,Spear of Destiny - Get You
+https://modland.com/pub/modules/Ad%20Lib/Apogee/Bobby%20Prince/Wolfenstein%203D%20-%20Spear%20Of%20Destiny/xgetyou.imf
+#EXTINF:-1 rate=700,Spear of Destiny - Funkie
+https://modland.com/pub/modules/Ad%20Lib/Apogee/Bobby%20Prince/Wolfenstein%203D%20-%20Spear%20Of%20Destiny/xfunkie.imf
+#EXTINF:-1 rate=700,Blake Stone - Theme
+https://modland.com/pub/modules/Ad%20Lib/Apogee/Bobby%20Prince/Blake%20Stone%20-%20Aliens%20Of%20Gold/theme.imf
+#EXTINF:-1 rate=700,Blake Stone - Jungle
+https://modland.com/pub/modules/Ad%20Lib/Apogee/Bobby%20Prince/Blake%20Stone%20-%20Aliens%20Of%20Gold/junglea.imf
+#EXTINF:-1 rate=280,Duke Nukem II - Theme
+https://modland.com/pub/modules/Ad%20Lib/Apogee/Bobby%20Prince/Duke%20Nukem%202/dukeiia.imf
+#EXTINF:-1 rate=280,Duke Nukem II - Fight
+https://modland.com/pub/modules/Ad%20Lib/Apogee/Bobby%20Prince/Duke%20Nukem%202/fighta.imf
+#EXTINF:-1,Dune - Title (DOSBox DRO)
+https://modland.com/pub/modules/Ad%20Lib/DOSBox/-%20unknown/dune1.dro
+#EXTINF:-1,Doom - At Doom's Gate (E1M1)
+https://opl.wafflenet.com/vgm/Weeppiko/Doom%20-%20At%20Doom's%20Gate%20(E1M1).vgz
+#EXTINF:-1,Doom - Kitchen Ace (And Taking Names) (E1M4)
+https://opl.wafflenet.com/vgm/AmigaX/Doom%20-%20Kitchen%20Ace%20(And%20Taking%20Names)%20(E1M4).vgz
+#EXTINF:-1,Doom - Dark Halls (E1M3)
+https://opl.wafflenet.com/vgm/brickblock369/Doom%20-%20Dark%20Halls%20(E1M3).vgz
+#EXTINF:-1,Doom II - Running From Evil (MAP01)
+https://opl.wafflenet.com/vgm/kvee/Doom%20II%20-%20Running%20From%20Evil%20(MAP01).vgz
+#EXTINF:-1,Streets of Rage 2 - Go Straight
+https://opl.wafflenet.com/vgm/KwaK101/Streets%20of%20Rage%202%20-%20Go%20Straight.vgz
+#EXTINF:-1,Streets of Rage - Fighting in the Street
+https://opl.wafflenet.com/vgm/Louis%20Gorenfeld/Streets%20of%20Rage%20-%20Fighting%20in%20the%20Street.vgz
+#EXTINF:-1,Mega Man X - Storm Eagle
+https://opl.wafflenet.com/vgm/Weeppiko/Mega%20Man%20X%20-%20Storm%20Eagle.vgz
+#EXTINF:-1,Castlevania III - Big Battle 1
+https://opl.wafflenet.com/vgm/Dullstar/Castlevania%20III%20-%20Dracula's%20Curse%20-%20Big%20Battle%201.vgz
+#EXTINF:-1,Snatcher - One Night in Neo Kobe City
+https://opl.wafflenet.com/vgm/bahamute/Snatcher%20-%20One%20Night%20in%20Neo%20Kobe%20City.vgz
+#EXTINF:-1,Snatcher - Twilight of Neo Kobe City
+https://opl.wafflenet.com/vgm/KONAMI/Snatcher%20-%20Twilight%20of%20Neo%20Kobe%20City.vgz
+#EXTINF:-1,Salamander - Power of Anger
+https://opl.wafflenet.com/vgm/KONAMI/Salamander%20-%20Power%20of%20Anger.vgz
+#EXTINF:-1,Super Street Fighter 2 - Cammy Stage
+https://opl.wafflenet.com/vgm/Aspar/Super%20Street%20Fighter%202%20-%20Cammy%20Stage.vgz
+#EXTINF:-1,Sonic the Hedgehog - Green Hill Zone
+https://opl.wafflenet.com/vgm/Benjamin%20Gerardin/Sonic%20the%20Hedgehog%20-%20Green%20Hill%20Zone.vgz
+#EXTINF:-1,Hi-Fly
+https://opl.wafflenet.com/vgm/%24pleen/Hi-Fly.vgz
+#EXTINF:-1,intro - titlemusic
+https://modland.com/pub/modules/Ad%20Lib/HSC%20AdLib%20Composer/Hannes%20Seifert/Burntime/intro%20-%20titlemusic.hsc
+#EXTINF:-1,neo title remix
+https://modland.com/pub/modules/Ad%20Lib/HSC%20AdLib%20Composer/Hannes%20Seifert/neo%20title%20remix.hsc
+#EXTINF:-1,Attack the Enemy's Heart
+https://opl.wafflenet.com/vgm/Ahn1979/Attack%20the%20Enemy's%20Heart.vgz
+#EXTINF:-1,Final Fantasy V - Clash on the Big Bridge
+https://opl.wafflenet.com/vgm/Aspar/Final%20Fantasy%20V%20-%20Clash%20on%20the%20Big%20Bridge.vgz
+#EXTINF:-1,ByteTune
+https://opl.wafflenet.com/vgm/Bird/ByteTune.vgz
+#EXTINF:-1,Sonic the Hedgehog 3 & Knuckles - Flying Battery Zone Act 1
+https://opl.wafflenet.com/vgm/BlastlessAnthony/Sonic%20the%20Hedgehog%203%20%26%20Knuckles%20-%20Flying%20Battery%20Zone%20Act%201.vgz
+#EXTINF:-1,A Different Kind of Hero
+https://opl.wafflenet.com/vgm/Brendan%20Bailey/A%20Different%20Kind%20of%20Hero.vgz
+#EXTINF:-1,Lemmings - Lemming 2
+https://opl.wafflenet.com/vgm/Brendan%20Bailey/Lemmings%20-%20Lemming%202.vgz
+#EXTINF:-1,THEE Chiptune
+https://opl.wafflenet.com/vgm/Brendan%20Bailey/THEE%20Chiptune.vgz
+#EXTINF:-1,Zak00
+https://opl.wafflenet.com/vgm/Dalezy/Deathlord%20-%20Zak00.vgz
+#EXTINF:-1,Motivation BBStro
+https://opl.wafflenet.com/vgm/Dalezy/Motivation%20BBStro.vgz
+#EXTINF:-1,Doom - Donna to the Rescue (E3M2)
+https://opl.wafflenet.com/vgm/EpicTyphlosion/Doom%20-%20Donna%20to%20the%20Rescue%20(E3M2).vgz
+#EXTINF:-1,Famicommodore
+https://opl.wafflenet.com/vgm/FADE/DoricDream%20-%20Famicommodore.vgz
+#EXTINF:-1,Still Remember Rob
+https://opl.wafflenet.com/vgm/Hannes%20Seifert/Still%20Remember%20Rob.vgz
+#EXTINF:-1,Crystal Intro
+https://opl.wafflenet.com/vgm/Hydra/TDK%20-%20Crystal%20Intro.vgz
+#EXTINF:-1,Get Ready for This
+https://opl.wafflenet.com/vgm/Unknown/2%20Unlimited%20-%20Get%20Ready%20for%20This.vgz
+#EXTINF:-1,Intro Coop Tune
+https://opl.wafflenet.com/vgm/subz3ro/Hydra%20%26%20NHP%20-%20Intro%20Coop%20Tune.vgz
+#EXTINF:-1,FAT 9
+https://opl.wafflenet.com/vgm/SexyElf/FAT%209.vgz
+#EXTINF:-1,Smells Like Teen Spirit
+https://opl.wafflenet.com/vgm/Rebible/Nirvana%20-%20Smells%20Like%20Teen%20Spirit.vgz
