@@ -65,6 +65,8 @@ pub fn build(b: *std.Build) void {
     });
     addModuleImports(test_mod, deps);
 
+    addMacosSdkPaths(b, test_mod, target);
+
     const tests = b.addTest(.{
         .root_module = test_mod,
     });

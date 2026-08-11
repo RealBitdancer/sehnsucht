@@ -179,7 +179,13 @@ const DroSource = struct {
     }
 };
 
-fn totalMs(stream: []const u8, version: Version, short_code: u8, long_code: u8) u64 {
+fn totalMs(
+    stream: []const u8,
+    version: Version,
+    short_code: u8,
+    long_code: u8,
+    codemap_len: usize,
+) u64 {
     var ms: u64 = 0;
     var pos: usize = 0;
     switch (version) {
@@ -210,6 +216,8 @@ fn totalMs(stream: []const u8, version: Version, short_code: u8, long_code: u8) 
                 ms += @as(u64, value) + 1;
             } else if (index == long_code) {
                 ms += (@as(u64, value) + 1) << 8;
+            } else if ((index & 0x7F) >= codemap_len) {
+                break;
             }
         },
     }
@@ -262,7 +270,7 @@ fn makeSource(
         .short_delay_code = opts.short_code,
         .long_delay_code = opts.long_code,
         .codemap = opts.codemap,
-        .total_ms = totalMs(copy, opts.version, opts.short_code, opts.long_code),
+        .total_ms = totalMs(copy, opts.version, opts.short_code, opts.long_code, opts.codemap.len),
         .title = title,
     };
     return fmt.MusicSource.init(src);

@@ -142,6 +142,13 @@ a chunk whose expanded size does not fit in the remaining budget is skipped,
 so a hostile header that lists the same byte range many times cannot expand
 without bound.
 
+Expansion attempts share a second budget of twice the input cap, charged by
+compressed size before each Huffman walk. An attempt that fails or is
+discarded afterwards keeps its charge, and a chunk larger than the remaining
+budget ends the scan. A hostile header can therefore neither retain unbounded
+output nor buy unbounded decompression work. Chunks rejected by the size
+checks above never reach the Huffman walker and cost no work budget.
+
 ### Track numbering
 
 Track numbers refer to the filtered music candidates, not raw Muse slot

@@ -82,6 +82,8 @@ output from [vgz2dro](https://github.com/RealBitdancer/vgz2dro)).
 Per-format layout and quirks: [doc/formats/](doc/formats/).
 Adding a format: [doc/adding-a-format.md](doc/adding-a-format.md).
 Plugin model: [doc/plugins.md](doc/plugins.md).
+Hotkey and playlist-mode conventions:
+[doc/hotkeys-and-playlist-modes.md](doc/hotkeys-and-playlist-modes.md).
 
 ## Playlists
 
@@ -111,7 +113,8 @@ zig build run -- playlists/modland.m3u
 
 Any file or playlist argument, and any playlist entry, may be an `http://` or
 `https://` URL. The bytes download fully into memory (16 MiB cap, redirects
-followed, 30-second timeout), then play like a local file.
+followed, stalls abandoned after 30 seconds without progress), then play like
+a local file.
 
 Relative entries in a remote playlist resolve against the playlist URL.
 Spaces and similar characters are percent-encoded as needed. Schemes the
@@ -135,8 +138,9 @@ Downloads run in the background. While bytes are in flight the status icon is
 a spinner, the header reads `[Loading]`, and every key still works. The audio
 device stops for the switch, so a slow server delays the next track but does
 not glitch the current one. Pressing skip again passes over a slow entry. A
-stalled server gives up after 30 seconds. Starting with a URL opens the UI at
-once and fetches behind the spinner.
+stalled server gives up after 30 seconds without delivering a byte, while a
+slow one may take as long as it keeps delivering. Starting with a URL opens
+the UI at once and fetches behind the spinner.
 
 ## Building
 
@@ -234,7 +238,7 @@ Everything else is shell navigation.
 | T (menu focused) | Open the theme browser |
 | Q (menu focused) | Quit |
 | Tab / Shift+Tab | Open the next / previous menu view, or focus action-only items |
-| ← / → | Parent dir / open selection (Browse, like ranger), or move menu focus |
+| ← / → | Parent dir / open selection (Browse, like ranger), or move menu focus. On Windows, parent from a drive root opens a Drives list |
 | ↑ / ↓ | Move list cursor (Browse / Playlist) |
 | PgUp / PgDn | Page list cursor (Browse / Playlist) |
 | Home / End | First / last list entry (Browse / Playlist) |

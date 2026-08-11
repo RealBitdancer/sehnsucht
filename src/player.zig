@@ -339,9 +339,6 @@ pub const Player = struct {
             ahead = if (pos < n) n - pos - 1 else 0;
             behind = pos;
         }
-        if (self.shuffle and ahead > 0) {
-            return true;
-        }
         return switch (dir) {
             .prev => behind > 0,
             .next => ahead > 0,
@@ -453,6 +450,39 @@ test "stepOrder and canStep pass over unplayable entries" {
     try std.testing.expectEqual(@as(?usize, null), try p.stepOrder(.next));
     try std.testing.expect(!p.canStep(.next));
     try std.testing.expect(!p.canStep(.prev));
+}
+
+test "canStep advertises only steps stepOrder can take in shuffle mode" {
+    const gpa = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init(gpa, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const entries = [_][]const u8{ "a.hsc", "b.vgm", "c.imf", "d.dro" };
+    var p = Player{
+        .gpa = gpa,
+        .io = io,
+        .engine = undefined,
+        .bridge = undefined,
+        .entries = &entries,
+        .index = 0,
+        .tick_rate_hz = 0,
+        .track_index = 0,
+        .src = null,
+    };
+    defer p.deinit();
+    try p.ensureOrder();
+    try p.resetFlags(&p.unplayable);
+    p.shuffle = true;
+
+    try std.testing.expect(p.canStep(.next));
+    try std.testing.expect(!p.canStep(.prev));
+    try std.testing.expectEqual(@as(?usize, null), try p.stepOrder(.prev));
+
+    p.index = entries.len - 1;
+    try std.testing.expect(p.canStep(.prev));
+    try std.testing.expect(!p.canStep(.next));
+    try std.testing.expectEqual(@as(?usize, null), try p.stepOrder(.next));
 }
 
 fn stepOrderOomBody(gpa: std.mem.Allocator, io: Io) !void {

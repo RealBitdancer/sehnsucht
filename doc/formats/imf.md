@@ -78,8 +78,11 @@ available       = file_size - 2
 stream          = file[2 .. 2 + declared_length]
 ```
 
-The declared length must be at least four, fit in the file, and be a multiple of
-four.
+A declared length that overruns the file is clamped to the data that actually
+arrived, since files in the wild (Rise of the Triad's `titlermx.imf` among
+them) lost their last records in transit. A trailing partial record is
+dropped. The stream is rejected only when no complete four-byte record
+remains.
 
 Bytes after the selected stream may carry a tag footer (below). Anything else
 there is ignored.
@@ -186,8 +189,9 @@ rate is 700 Hz. It is `IMF` otherwise.
 
 Paths without an IMF-family extension are not claimed. Plain inputs shorter
 than four bytes are rejected. A malformed `ADLIB` wrapper falls back to plain
-framing. A stream is rejected when its declared length exceeds the available
-data, its size is not a multiple of four, or all command delays are zero.
+framing. An overrunning declared length is clamped and a trailing partial
+record is dropped rather than rejected. A stream is rejected when no complete
+command record remains or all command delays are zero.
 
 ## Compatibility notes
 

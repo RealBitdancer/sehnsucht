@@ -108,7 +108,7 @@ pub fn readPathAlloc(
     return Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(format.max_input_bytes));
 }
 
-const download_timeout_ms: u64 = 30_000;
+const download_idle_timeout_ms: u64 = 30_000;
 const download_poll_ms: u64 = 100;
 
 const FetchResult = anyerror![]u8;
@@ -119,8 +119,9 @@ fn fetchTask(
     url: []const u8,
     out: *FetchResult,
     done: *std.atomic.Value(bool),
+    progress: *std.atomic.Value(usize),
 ) void {
-    out.* = fetchNow(gpa, io, url);
+    out.* = fetchNow(gpa, io, url, progress);
     done.store(true, .release);
 }
 
@@ -132,10 +133,17 @@ pub fn fetch(
 ) ![]u8 {
     var result: FetchResult = error.Canceled;
     var done = std.atomic.Value(bool).init(false);
-    var fut = try io.concurrent(fetchTask, .{ gpa, io, url, &result, &done });
+    var progress = std.atomic.Value(usize).init(0);
+    var fut = try io.concurrent(fetchTask, .{ gpa, io, url, &result, &done, &progress });
     var aborted = false;
-    var waited: u64 = 0;
-    while (!done.load(.acquire) and waited < download_timeout_ms) : (waited += download_poll_ms) {
+    var seen: usize = 0;
+    var idle: u64 = 0;
+    while (!done.load(.acquire) and idle < download_idle_timeout_ms) : (idle += download_poll_ms) {
+        const received = progress.load(.acquire);
+        if (received != seen) {
+            seen = received;
+            idle = 0;
+        }
         if (abort) |flag| {
             if (flag.load(.acquire)) {
                 aborted = true;
@@ -155,7 +163,12 @@ pub fn fetch(
     };
 }
 
-fn fetchNow(gpa: std.mem.Allocator, io: Io, url: []const u8) ![]u8 {
+fn fetchNow(
+    gpa: std.mem.Allocator,
+    io: Io,
+    url: []const u8,
+    progress: *std.atomic.Value(usize),
+) ![]u8 {
     var client: std.http.Client = .{ .allocator = gpa, .io = io };
     defer client.deinit();
 
@@ -186,7 +199,21 @@ fn fetchNow(gpa: std.mem.Allocator, io: Io, url: []const u8) ![]u8 {
     var transfer_buffer: [8 * 1024]u8 = undefined;
     var decompress: std.http.Decompress = undefined;
     const reader = response.readerDecompressing(&transfer_buffer, &decompress, decompress_buffer);
-    return reader.allocRemaining(gpa, .limited(format.max_input_bytes));
+
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+    var chunk: [8 * 1024]u8 = undefined;
+    while (true) {
+        var vecs: [1][]u8 = .{&chunk};
+        const got = reader.readVec(&vecs) catch |err| switch (err) {
+            error.EndOfStream => break,
+            error.ReadFailed => return error.ReadFailed,
+        };
+        if (out.items.len + got > format.max_input_bytes) return error.StreamTooLong;
+        try out.appendSlice(gpa, chunk[0..got]);
+        if (got > 0) progress.store(out.items.len, .release);
+    }
+    return out.toOwnedSlice(gpa);
 }
 
 // --- tests -------------------------------------------------------------------

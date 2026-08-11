@@ -4,6 +4,7 @@
 //
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Io = std.Io;
 const vaxis = @import("vaxis");
 
@@ -12,7 +13,7 @@ const format = @import("format.zig");
 const playlist = @import("playlist.zig");
 const Theme = @import("theme.zig").Theme;
 
-pub const Kind = enum { dir, playlist, music };
+pub const Kind = enum { dir, playlist, music, drive };
 
 pub const Entry = struct {
     name: []const u8,
@@ -50,6 +51,20 @@ fn isRootPath(path: []const u8) bool {
     return isUncRootPath(path);
 }
 
+fn canEnterDrivesView(path: []const u8) bool {
+    return builtin.os.tag == .windows and format.isWindowsDriveRoot(path);
+}
+
+fn driveRootLabel(letter: u8) [3]u8 {
+    return .{ std.ascii.toUpper(letter), ':', '\\' };
+}
+
+fn driveRootLabelFromPath(path: []const u8) ?[3]u8 {
+    if (!format.isWindowsDriveRoot(path)) return null;
+    if (!std.ascii.isAlphabetic(path[0])) return null;
+    return driveRootLabel(path[0]);
+}
+
 pub const State = struct {
     gpa: std.mem.Allocator,
     io: ?Io = null,
@@ -58,6 +73,7 @@ pub const State = struct {
     nav: paint.ListNav = .{},
     err_msg: ?[]const u8 = null,
     pending_play_path: ?[]u8 = null,
+    drives_view: bool = false,
 
     pub fn deinit(self: *State) void {
         self.clearEntries();
@@ -73,6 +89,13 @@ pub const State = struct {
     }
 
     pub fn ensure(self: *State) !void {
+        if (self.drives_view) {
+            if (self.refreshDrivesList(.keep)) {
+                return;
+            } else |_| {
+                self.drives_view = false;
+            }
+        }
         const io = self.io orelse {
             self.err_msg = "I/O unavailable";
             return;
@@ -90,8 +113,26 @@ pub const State = struct {
     }
 
     pub fn goParent(self: *State) void {
+        if (self.drives_view) return;
         if (self.path.len == 0) return;
         self.normalizePath() catch return;
+
+        if (canEnterDrivesView(self.path)) {
+            var label_buf: [3]u8 = undefined;
+            const select: ?[]const u8 = if (driveRootLabelFromPath(self.path)) |l| blk: {
+                label_buf = l;
+                break :blk label_buf[0..];
+            } else null;
+            self.drives_view = true;
+            const selection: RefreshSelection = if (select) |s| .{ .select = s } else .reset;
+            self.refreshDrivesList(selection) catch {
+                self.drives_view = false;
+                self.refreshList(.keep) catch {};
+                self.err_msg = "cannot list drives";
+            };
+            return;
+        }
+
         if (isRootPath(self.path)) return;
 
         const parent = format.dirnameOf(self.path);
@@ -120,6 +161,7 @@ pub const State = struct {
                     self.enterDir(e.name);
                 }
             },
+            .drive => self.enterDrive(e.name),
             .music, .playlist => self.requestPlay(e.name),
         }
     }
@@ -130,7 +172,12 @@ pub const State = struct {
         const bar_h: u16 = if (with_bar) paint.key_bar_height else 0;
         if (win.height < list_top + 1) return;
 
-        const path_line = if (self.path.len > 0) self.path else ".";
+        const path_line: []const u8 = if (self.drives_view)
+            "Drives"
+        else if (self.path.len > 0)
+            self.path
+        else
+            ".";
         paint.printFitTail(win, 1, 0, path_line, win.width -| 2, theme.style(.browse_path));
 
         if (self.err_msg) |err| {
@@ -191,12 +238,17 @@ pub const State = struct {
 
             paint.fillRowBg(win, y, 0, row_w, bg);
 
-            if (e.kind == .dir) {
+            const type_label: ?[]const u8 = switch (e.kind) {
+                .dir => "<DIR>",
+                .drive => "<DRV>",
+                .music, .playlist => null,
+            };
+            if (type_label) |label| {
                 paint.printAt(
                     win,
                     type_x,
                     y,
-                    "<DIR>",
+                    label,
                     theme.listEntry(if (is_cursor) focus_fg else dir_fg, bg, is_cursor),
                 );
             }
@@ -209,10 +261,17 @@ pub const State = struct {
         if (with_bar) self.drawKeyBar(win, theme);
     }
 
+    fn canParent(self: *const State) bool {
+        if (self.drives_view) return false;
+        if (self.path.len == 0) return false;
+        if (canEnterDrivesView(self.path)) return true;
+        return !isRootPath(self.path);
+    }
+
     fn drawKeyBar(self: *const State, win: vaxis.Window, theme: Theme) void {
         const n = self.entries.len;
         const can_open = n > 0;
-        const can_parent = self.path.len > 0 and !isRootPath(self.path);
+        const can_parent = self.canParent();
         const hints = paint.listNavigationHints(n, self.nav.cursor) ++ [_]paint.Hotkey{
             .{ .key = "Enter", .label = "", .enabled = can_open },
             .{ .key = "→", .label = "open", .enabled = can_open, .glue = true },
@@ -243,14 +302,10 @@ pub const State = struct {
 
     fn openDir(self: *State, io: Io) !Io.Dir {
         try self.normalizePath();
-        const path = self.path;
-        if (path.len >= 2 and path[1] == ':') {
-            return Io.Dir.openDirAbsolute(io, path, .{ .iterate = true });
+        if (std.fs.path.isAbsolute(self.path)) {
+            return Io.Dir.openDirAbsolute(io, self.path, .{ .iterate = true });
         }
-        if (path.len > 0 and (path[0] == '/' or path[0] == '\\')) {
-            return Io.Dir.openDirAbsolute(io, path, .{ .iterate = true });
-        }
-        return Io.Dir.cwd().openDir(io, path, .{ .iterate = true });
+        return Io.Dir.cwd().openDir(io, self.path, .{ .iterate = true });
     }
 
     const RefreshSelection = union(enum) {
@@ -259,12 +314,21 @@ pub const State = struct {
         select: []const u8,
     };
 
-    fn refreshList(self: *State, selection: RefreshSelection) !void {
-        const io = self.io orelse {
-            self.err_msg = "I/O unavailable";
-            return;
-        };
-        const selected: ?[]u8 = switch (selection) {
+    fn applySelection(self: *State, selected: ?[]const u8) void {
+        self.nav.cursor = 0;
+        self.nav.scroll = 0;
+        const want = selected orelse return;
+        for (self.entries, 0..) |e, idx| {
+            if (std.mem.eql(u8, e.name, want)) {
+                self.nav.cursor = idx;
+                break;
+            }
+        }
+        self.nav.syncTo(self.nav.cursor, self.entries.len);
+    }
+
+    fn takeSelectionName(self: *State, selection: RefreshSelection) ?[]u8 {
+        return switch (selection) {
             .keep => if (self.entries.len != 0) blk: {
                 const e = self.entries[@min(self.nav.cursor, self.entries.len - 1)];
                 break :blk self.gpa.dupe(u8, e.name) catch null;
@@ -272,6 +336,38 @@ pub const State = struct {
             .reset => null,
             .select => |name| self.gpa.dupe(u8, name) catch null,
         };
+    }
+
+    fn refreshDrivesList(self: *State, selection: RefreshSelection) !void {
+        const selected = self.takeSelectionName(selection);
+        defer if (selected) |s| self.gpa.free(s);
+        self.clearEntries();
+
+        var list: std.ArrayList(Entry) = .empty;
+        defer {
+            for (list.items) |e| {
+                if (nameOwned(e.name)) self.gpa.free(e.name);
+            }
+            list.deinit(self.gpa);
+        }
+
+        try appendLogicalDrives(self.gpa, &list);
+        if (list.items.len == 0) return error.NoDrives;
+
+        const out = try self.gpa.alloc(Entry, list.items.len);
+        @memcpy(out, list.items);
+        list.clearRetainingCapacity();
+        self.entries = out;
+        self.applySelection(selected);
+        self.err_msg = null;
+    }
+
+    fn refreshList(self: *State, selection: RefreshSelection) !void {
+        const io = self.io orelse {
+            self.err_msg = "I/O unavailable";
+            return;
+        };
+        const selected = self.takeSelectionName(selection);
         defer if (selected) |s| self.gpa.free(s);
         self.clearEntries();
 
@@ -313,24 +409,14 @@ pub const State = struct {
         }.less;
         std.mem.sort(Entry, list.items, {}, less);
 
-        const parent_rows: usize = if (isRootPath(self.path)) 0 else 1;
+        const parent_rows: usize = if (self.canParent()) 1 else 0;
         const total = parent_rows + list.items.len;
         const out = try self.gpa.alloc(Entry, total);
         if (parent_rows != 0) out[0] = .{ .name = "..", .kind = .dir };
         @memcpy(out[parent_rows..], list.items);
         list.clearRetainingCapacity();
         self.entries = out;
-        self.nav.cursor = 0;
-        self.nav.scroll = 0;
-        if (selected) |want| {
-            for (out, 0..) |e, idx| {
-                if (std.mem.eql(u8, e.name, want)) {
-                    self.nav.cursor = idx;
-                    break;
-                }
-            }
-            self.nav.syncTo(self.nav.cursor, self.entries.len);
-        }
+        self.applySelection(selected);
         self.err_msg = null;
     }
 
@@ -339,6 +425,18 @@ pub const State = struct {
         const joined = format.joinDir(self.gpa, self.path, name) catch return;
         self.gpa.free(self.path);
         self.path = joined;
+        self.drives_view = false;
+        self.refreshList(.reset) catch {
+            self.err_msg = "cannot open directory";
+        };
+    }
+
+    fn enterDrive(self: *State, root: []const u8) void {
+        const copy = self.gpa.dupe(u8, root) catch return;
+        self.gpa.free(self.path);
+        self.path = copy;
+        self.drives_view = false;
+        self.normalizePath() catch {};
         self.refreshList(.reset) catch {
             self.err_msg = "cannot open directory";
         };
@@ -351,6 +449,24 @@ pub const State = struct {
         self.pending_play_path = full;
     }
 };
+
+fn appendLogicalDrives(gpa: std.mem.Allocator, list: *std.ArrayList(Entry)) !void {
+    if (builtin.os.tag != .windows) return;
+
+    const kernel32 = struct {
+        extern "kernel32" fn GetLogicalDrives() callconv(.winapi) std.os.windows.DWORD;
+    };
+    const mask = kernel32.GetLogicalDrives();
+    var bit: u5 = 0;
+    while (bit < 26) : (bit += 1) {
+        if ((mask & (@as(u32, 1) << bit)) == 0) continue;
+        const letter: u8 = 'A' + @as(u8, bit);
+        const label = driveRootLabel(letter);
+        const name = try gpa.dupe(u8, &label);
+        errdefer gpa.free(name);
+        try list.append(gpa, .{ .name = name, .kind = .drive });
+    }
+}
 
 // --- tests -------------------------------------------------------------------
 
@@ -366,4 +482,99 @@ test "root path detection stops UNC walks at the share" {
     try std.testing.expect(!isRootPath("//server/share/music"));
     try std.testing.expect(!isRootPath("C:\\music"));
     try std.testing.expect(!isRootPath("music"));
+}
+
+test "drive root label normalizes letter case" {
+    try std.testing.expectEqualStrings("C:\\", &driveRootLabel('c'));
+    try std.testing.expectEqualStrings("D:\\", &driveRootLabelFromPath("d:\\").?);
+    try std.testing.expectEqualStrings("C:\\", &driveRootLabelFromPath("C:").?);
+    try std.testing.expect(driveRootLabelFromPath("C:\\music") == null);
+    try std.testing.expect(driveRootLabelFromPath("/") == null);
+}
+
+test "parent is available on windows drive roots only" {
+    var state: State = .{ .gpa = std.testing.allocator, .path = try std.testing.allocator.dupe(u8, "C:\\") };
+    defer state.deinit();
+
+    if (builtin.os.tag == .windows) {
+        try std.testing.expect(canEnterDrivesView(state.path));
+        try std.testing.expect(state.canParent());
+    } else {
+        try std.testing.expect(!canEnterDrivesView(state.path));
+        try std.testing.expect(!state.canParent());
+    }
+
+    state.drives_view = true;
+    try std.testing.expect(!state.canParent());
+    state.drives_view = false;
+
+    state.gpa.free(state.path);
+    state.path = try std.testing.allocator.dupe(u8, "C:\\music");
+    try std.testing.expect(state.canParent());
+    try std.testing.expect(!canEnterDrivesView(state.path));
+
+    state.gpa.free(state.path);
+    state.path = try std.testing.allocator.dupe(u8, "\\\\server\\share");
+    try std.testing.expect(!state.canParent());
+    try std.testing.expect(!canEnterDrivesView(state.path));
+}
+
+test "goParent from windows drive root opens drives view" {
+    if (builtin.os.tag != .windows) return;
+
+    var state: State = .{ .gpa = std.testing.allocator };
+    defer state.deinit();
+    state.path = try std.testing.allocator.dupe(u8, "C:\\");
+    state.goParent();
+    try std.testing.expect(state.drives_view);
+    try std.testing.expect(state.entries.len > 0);
+    for (state.entries) |e| {
+        try std.testing.expect(e.kind == .drive);
+        try std.testing.expect(e.name.len == 3);
+        try std.testing.expect(e.name[1] == ':' and e.name[2] == '\\');
+    }
+    const cur = state.entries[state.nav.cursor];
+    try std.testing.expect(std.ascii.eqlIgnoreCase(cur.name, "C:\\"));
+}
+
+test "selection restore matches names exactly" {
+    const gpa = std.testing.allocator;
+    var state: State = .{ .gpa = gpa };
+    defer state.deinit();
+    state.entries = try gpa.alloc(Entry, 2);
+    state.entries[0] = .{ .name = try gpa.dupe(u8, "music"), .kind = .dir };
+    state.entries[1] = .{ .name = try gpa.dupe(u8, "Music"), .kind = .dir };
+    state.applySelection("Music");
+    try std.testing.expectEqual(@as(usize, 1), state.nav.cursor);
+    state.applySelection("music");
+    try std.testing.expectEqual(@as(usize, 0), state.nav.cursor);
+}
+
+test "an empty drives list is an error, not a dead end" {
+    if (builtin.os.tag == .windows) return;
+    var state: State = .{ .gpa = std.testing.allocator };
+    defer state.deinit();
+    state.drives_view = true;
+    try std.testing.expectError(error.NoDrives, state.refreshDrivesList(.reset));
+}
+
+test "goParent is a no-op on the drives view" {
+    var state: State = .{ .gpa = std.testing.allocator };
+    defer state.deinit();
+    state.path = try std.testing.allocator.dupe(u8, "C:\\");
+    state.drives_view = true;
+    state.goParent();
+    try std.testing.expect(state.drives_view);
+    try std.testing.expectEqual(@as(usize, 0), state.entries.len);
+}
+
+test "enterDrive leaves drives view and sets path" {
+    var state: State = .{ .gpa = std.testing.allocator };
+    defer state.deinit();
+    state.path = try std.testing.allocator.dupe(u8, "C:\\");
+    state.drives_view = true;
+    state.enterDrive("D:\\");
+    try std.testing.expect(!state.drives_view);
+    try std.testing.expectEqualStrings("D:\\", state.path);
+    try std.testing.expect(state.err_msg != null);
 }

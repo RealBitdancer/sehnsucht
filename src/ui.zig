@@ -548,7 +548,13 @@ pub const Model = struct {
                 if (self.playlist_playing) self.playlist_index else null,
             ),
             .browse => self.browse.draw(content, theme),
-            .theme => self.theme_list.draw(content, theme, &themes, self.theme_index),
+            .theme => self.theme_list.draw(
+                content,
+                theme,
+                self.frame_arena.allocator(),
+                &themes,
+                self.theme_index,
+            ),
             .visualize, .quit => {
                 var ctx = visualizer.DrawContext{
                     .win = content,

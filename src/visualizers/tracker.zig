@@ -189,7 +189,7 @@ fn drawInstrument(ctx: *viz.DrawContext, inst_index: u8, top: u16, gauge_w: u16)
                         8 => .{ .value = op.decay, .max = 15 },
                         9 => .{ .value = op.sustain, .max = 15 },
                         10 => .{ .value = op.release, .max = 15 },
-                        else => .{ .value = op.wave, .max = 3 },
+                        else => .{ .value = op.wave, .max = 7 },
                     };
                     const text = std.fmt.allocPrint(a, "{d: >3}", .{gauge.value}) catch return;
                     paint.printAt(ctx.win, vcol, row, text, t.style(.inst_value));

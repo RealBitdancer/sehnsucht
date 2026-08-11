@@ -50,9 +50,9 @@ Related code:
    Avoid awkward coinages such as “unloop” or “unshuffle”.
 
 4. **Dim when the key cannot act**
-   Key glyphs and their labels use `Theme.keyKeyDisabled` /
-   `Theme.keyLabelDisabled` when that press would no-op. Shared pair
-   labels are an exception (see below).
+   Key glyphs and their labels use `theme.style(.key_key_disabled)` /
+   `theme.style(.key_label_disabled)` when that press would no-op. Shared
+   pair labels are an exception (see below).
 
 5. **Glued pairs share one description**
    Directional pairs are drawn without a middle dot between the two keys
@@ -116,7 +116,7 @@ Layout (content column `x = 1`, aligned with the `▶` play glyph):
 
 When the loader marks an entry unplayable, a transient skip notice
 takes over this row for about five seconds: `✗ name: reason`, the `✗`
-in `Theme.noticeMark`, the name percent-decoded like the Playlist rows,
+in `theme.style(.notice_mark)`, the name percent-decoded like the Playlist rows,
 the reason a plain phrase from `loadErrorLabel` (`src/loaderr.zig`). The
 chips return when the countdown expires (`Model.noticeSkip`,
 `notice_ticks`). The progress row above is untouched.
@@ -185,8 +185,8 @@ row.
 
 Style (always drawn while available, never hidden when off):
 
-- **On:** `Theme.modeLightOn` (amber), bold
-- **Off:** `Theme.modeLightOff` (gray)
+- **On:** `theme.style(.mode_light_on)` (amber), bold
+- **Off:** `theme.style(.mode_light_off)` (gray)
 
 Drawn right-to-left so left-to-right order is loop, shuffle, mute. Mute
 is the outermost, so it holds the same column when the playlist pair is
@@ -199,7 +199,7 @@ this light is what says so.
 ## Browse and Playlist key bars
 
 Each list pane reserves two bottom rows: a barely-visible `─` rule
-(`paint.drawRule`, `Theme.listRule`) then the chip row. The column-header
+(`paint.drawRule`, `theme.style(.list_rule)`) then the chip row. The column-header
 rule uses the same rail style (four rules total: two per list pane).
 
 ### Browse
@@ -217,7 +217,13 @@ the selection like Enter, `←` goes to the parent like Backspace.
 | `↓` / `PgDn` / `End` | Cursor already on last row |
 | Pair labels `move` / `page` / `jump` | Empty list only (`label_enabled = can_up or can_down`) |
 | `Enter → open` | List empty |
-| `Bksp ← parent` | Path is a filesystem root (drive root, `/`, UNC share root) |
+| `Bksp ← parent` | Already at the top of the browse tree: the virtual **Drives** list on Windows, or a non-drive filesystem root (`/`, UNC share root) on any OS |
+
+On Windows, a drive root (`C:\`, `D:\`, …) is not a dead end. Parent climbs into a
+virtual **Drives** list (path header shows `Drives`, rows are `<DRV>` entries such
+as `C:\`). Opening a drive sets the browse path to that root and lists it like any
+other directory. The drive you left is re-selected in the list. UNC share roots
+and Unix `/` still stop at the real root; the virtual list is Windows-only.
 
 ### Playlist list pane
 
@@ -283,8 +289,8 @@ Wrap when `loop_all`:
 `order_pos` drifts).
 
 `canStep(dir)` drives the status bar `[` / `]` chips and must agree with
-whether `stepOrder` would succeed, with one intentional UI softness for
-shuffle (below).
+whether `stepOrder` would succeed. A lit chip is a promise that pressing
+the key steps.
 
 ### `canStep` rules
 
@@ -293,19 +299,19 @@ shuffle (below).
 | Fewer than 2 entries | false | false |
 | No playable entry left (all marked) | false | false |
 | `loop_all` | true | true |
-| No loop, no shuffle | playable entry behind | playable entry ahead |
-| No loop, shuffle, **playable tracks still ahead** | true | true |
-| No loop, shuffle, **pass exhausted** (nothing ahead) | playable entry behind | false |
+| No loop | playable entry behind in the active order | playable entry ahead in the active order |
 
 Entries marked unplayable count in neither direction, so the chips dim
 as the playable set shrinks.
 
-Rationale for the shuffle mid-pass row: while a shuffle pass still has
-unplayed tracks ahead, both skip chips stay lit so the bar does not look
-“stuck” at the start of a pass (where `order_pos` is 0 after pinning
-current first). Pressing prev at the true start of a pass still no-ops
-(`stepOrder` returns null), and next is the live direction. Once nothing
-remains ahead, next dims and prev stays available for history.
+One rule serves file order and shuffle alike: positions are slots in the
+active `order`, which is the identity for file order and the current
+permutation for shuffle. At the start of a shuffle pass prev is dark,
+since nothing in this pass lies behind, and it lights after the first
+advance. Once the pass is exhausted, next dims and prev keeps the pass
+history reachable. An earlier release kept both chips lit mid-pass as a
+deliberate softness, which let prev advertise a step that `stepOrder`
+refused. Version 0.1.1 removed it.
 
 Auto-advance (song end while multi and not detached) picks its target
 with `stepOrder(.next)` and hands the load to the async `Loader` (a busy
@@ -334,7 +340,7 @@ that started it. Deliberate view activations still place the cursor
 ### Played marker
 
 Rows that have played this session extinguish their number in the
-Playlist view (ghost ink, `Theme.playlistPlayedFg`), like the music
+Playlist view (ghost ink, `theme.colors.playlist_played_fg`), like the music
 calendar of a CD player, so shuffle coverage reads down the column at a
 glance. Rules:
 
@@ -348,7 +354,7 @@ glance. Rules:
   the playlist itself is replaced (`replaceEntries`). Never persisted.
 - Detached Browse play marks nothing: no playlist row is sounding.
 - Precedence in the row: the cursor and playing styles win, and only a plain
-  row shows the ghost number. The title keeps `Theme.listRowFg` either
+  row shows the ghost number. The title keeps `theme.colors.list_row_fg` either
   way, so a played row stays as readable as an unplayed one.
 
 ### Unplayable marker
@@ -377,8 +383,8 @@ player. Rules:
 - The moment an entry is marked, the status key row shows the transient
   `✗ name: reason` notice (see the status row section), so a skip is
   visible even while the Playlist view is closed.
-- Row treatment: red `✗` (`Theme.playlistDeadMarkFg`) in the marker
-  column, number, title, and format dimmed to `Theme.playlistDeadFg`.
+- Row treatment: red `✗` (`theme.colors.playlist_dead_mark_fg`) in the marker
+  column, number, title, and format dimmed to `theme.colors.playlist_dead_fg`.
   Cursor and playing styles
   win so the selected row stays readable for the retry. The unplayable
   dimming outranks the played ghost ink.
@@ -397,7 +403,7 @@ player. Rules:
 |---|---|---------------------|------------------------|-------------------------|
 | off | off | disabled / no-op | disabled / no-op | halts at the songend edge (paused) |
 | off | on | wraps to first (file order) | wraps to last | continues |
-| on | off | disabled when pass exhausted | soft: chip may stay lit mid-pass, true start no-ops | halts when pass exhausted |
+| on | off | disabled when pass exhausted | disabled at pass start, live once the pass has history | halts when pass exhausted |
 | on | on | reshuffle, play new pass | reshuffle path for prev wrap | reshuffle and continue |
 
 ---
@@ -419,13 +425,13 @@ pub const Hotkey = struct {
 - Starts at `x0` (status and lists use `1` to clear the frame border).
 - Between chips: ` · ` unless `glue`.
 - Omits space+label when `label` is empty.
-- Key style: `Theme.keyKey` vs `Theme.keyKeyDisabled`.
-- Label style: `Theme.keyLabel` vs `Theme.keyLabelDisabled`, chosen by
-  `label_enabled orelse enabled`.
+- Key style: `theme.style(.key_key)` vs `theme.style(.key_key_disabled)`.
+- Label style: `theme.style(.key_label)` vs `theme.style(.key_label_disabled)`,
+  chosen by `label_enabled orelse enabled`.
 - A chip that would not fit the window ends the row: narrow terminals
   truncate at chip boundaries, never mid-chip.
 
-List internal rules: `paint.drawRule` uses `Theme.listRule` (barely
+List internal rules: `paint.drawRule` uses `theme.style(.list_rule)` (barely
 visible on the canvas), not frame chrome.
 
 ---
@@ -498,10 +504,6 @@ visible on the canvas), not frame chrome.
 ## Follow-ups / not implemented
 
 - Repeat-one (a single-track repeat mode) is not implemented.
-- Prev at the true start of a shuffle pass still no-ops even if the chip
-  is lit while tracks remain ahead (see soft rule above). Tightening that
-  without reintroducing mid-pass dimming may need a short prev-history
-  stack.
 - On narrow terminals every key bar truncates at chip boundaries, so
   later chips simply drop out. A priority order (drop labels before
   whole chips) could keep more visible.
@@ -551,6 +553,8 @@ visible on the canvas), not frame chrome.
       same (pre-fader metering), only the loudness changes
 - [ ] S on, L off: next stays live until last of shuffle pass, then after
       last, next dim, prev live, and auto-advance halts
+- [ ] S on, L off, fresh pass: `[` is dim before the first advance and
+      lights after it, and pressing `[` while dim changes nothing
 - [ ] End of list without loop: playback pauses at the songend edge,
       Space replays the last track, `[` steps back
 - [ ] S on, L on: after last track, new shuffle and continue (never the

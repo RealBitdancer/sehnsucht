@@ -259,9 +259,7 @@ fn reportUnsupportedPath(io: Io, path: []const u8) void {
 }
 
 fn tryOpenDir(io: Io, path: []const u8) ?Io.Dir {
-    if (path.len >= 2 and path[1] == ':')
-        return Io.Dir.openDirAbsolute(io, path, .{}) catch null;
-    if (path.len > 0 and (path[0] == '/' or path[0] == '\\'))
+    if (std.fs.path.isAbsolute(path))
         return Io.Dir.openDirAbsolute(io, path, .{}) catch null;
     return Io.Dir.cwd().openDir(io, path, .{}) catch null;
 }

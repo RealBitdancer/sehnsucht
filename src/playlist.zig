@@ -20,8 +20,26 @@ pub fn isPlaylistPath(path: []const u8) bool {
 fn isAbsoluteEntry(p: []const u8) bool {
     if (p.len == 0) return false;
     if (p[0] == '/' or p[0] == '\\') return true;
-    if (p.len >= 2 and p[1] == ':') return true;
+    if (isWindowsDrivePrefix(p)) return true;
     return remote.hasUrlScheme(p);
+}
+
+fn isWindowsDrivePrefix(p: []const u8) bool {
+    if (p.len < 2 or p[1] != ':' or !std.ascii.isAlphabetic(p[0])) return false;
+    return p.len == 2 or p[2] == '/' or p[2] == '\\';
+}
+
+fn hasControlBytes(s: []const u8) bool {
+    for (s) |c| {
+        if (c < 0x20 or c == 0x7F) return true;
+    }
+    return false;
+}
+
+fn scrubControlBytes(s: []u8) void {
+    for (s) |*c| {
+        if (c.* < 0x20 or c.* == 0x7F) c.* = ' ';
+    }
 }
 
 fn resolveEntry(gpa: std.mem.Allocator, dir: []const u8, line: []const u8) ![]const u8 {
@@ -96,6 +114,7 @@ const Pending = struct {
 
     fn replace(self: *Pending, gpa: std.mem.Allocator, extinf: Extinf) !void {
         const copy = if (extinf.title) |t| try gpa.dupe(u8, t) else null;
+        if (copy) |c| scrubControlBytes(c);
         self.clear(gpa);
         self.* = .{ .title = copy, .rate = extinf.rate };
     }
@@ -141,9 +160,14 @@ pub fn parse(
                 try pending.replace(gpa, parseExtinf(line));
             } else if (playlistName(line)) |nm| {
                 const copy = try gpa.dupe(u8, nm);
+                scrubControlBytes(copy);
                 if (list_name) |old| gpa.free(old);
                 list_name = copy;
             }
+            continue;
+        }
+        if (hasControlBytes(line)) {
+            pending.clear(gpa);
             continue;
         }
         const entry = resolveEntry(gpa, dir, line) catch |err| switch (err) {
@@ -551,6 +575,31 @@ test "relative entries on a remote playlist are percent-encoded" {
     try std.testing.expectEqual(@as(usize, 2), parsed.entries.len);
     try std.testing.expectEqualStrings("https://example.com/my%20song.dro", parsed.entries[0]);
     try std.testing.expectEqualStrings("https://example.com/sub/x%20y.imf", parsed.entries[1]);
+}
+
+test "parse rejects entries with control bytes and scrubs display text" {
+    const gpa = std.testing.allocator;
+    const text = "#PLAYLIST:evil\x1b]0;pwned\x07name\n" ++
+        "#EXTINF:-1,title\x1b[31mred\n" ++
+        "good.hsc\n" ++
+        "https://evil.com/\x1b]0;pwned\x07x.hsc\n";
+    const parsed = try parse(gpa, "x.m3u", text);
+    defer free(gpa, parsed);
+    try std.testing.expectEqual(@as(usize, 1), parsed.entries.len);
+    try std.testing.expectEqualStrings("good.hsc", parsed.entries[0]);
+    try std.testing.expectEqualStrings("title [31mred", parsed.titles[0].?);
+    try std.testing.expectEqualStrings("evil ]0;pwned name", parsed.name.?);
+}
+
+test "a colon inside a plain filename does not make the entry absolute" {
+    const gpa = std.testing.allocator;
+    const text = "a:song.hsc\nC:\\tunes\\b.imf\nC:c.imf\n";
+    const parsed = try parse(gpa, "music/list.m3u", text);
+    defer free(gpa, parsed);
+    try std.testing.expectEqual(@as(usize, 3), parsed.entries.len);
+    try std.testing.expectEqualStrings("music/a:song.hsc", parsed.entries[0]);
+    try std.testing.expectEqualStrings("C:/tunes/b.imf", parsed.entries[1]);
+    try std.testing.expectEqualStrings("music/C:c.imf", parsed.entries[2]);
 }
 
 test "parse drops entries no format claims, including nested playlists" {

@@ -188,15 +188,18 @@ fn load(
 
     if (compressed) {
         const dict = ctx.sibling2 orelse return error.AudioTNeedsDict;
-        // A hostile header can list the same byte range any number of times,
-        // so per-chunk caps alone bound nothing: all retained expansions
-        // together share one archive-wide budget.
+        // Retained expansions share one archive-wide budget. Attempts share a
+        // second, charged by source size even when the chunk is discarded, so
+        // a hostile header cannot burn CPU on repeated Huffman walks.
         var budget: usize = fmt.max_input_bytes;
+        var work_budget: usize = 2 * fmt.max_input_bytes;
         for (chunks) |c| {
             const piece = audiot[c.off .. c.off + c.len];
             if (piece.len < 5) continue;
             const expanded_len = fmt.readU32Le(piece, 0);
             if (expanded_len < min_music_bytes or expanded_len > budget) continue;
+            if (piece.len > work_budget) break;
+            work_budget -= piece.len;
             const body = huffExpand(gpa, dict, piece[4..], expanded_len) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
                 else => continue,

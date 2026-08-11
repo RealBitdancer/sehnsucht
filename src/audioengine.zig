@@ -100,7 +100,14 @@ pub const AudioEngine = struct {
 
     pub fn stop(self: *AudioEngine) void {
         if (self.started) {
-            self.device.stop() catch @panic("audio device stop failed");
+            self.device.stop() catch {
+                // A lost device fails to stop but its callback is already
+                // silent, so tearing down chip and source stays safe. A
+                // still-running callback would race that teardown.
+                if (self.device.getState() == .started) {
+                    @panic("audio device kept running after a failed stop");
+                }
+            };
             self.started = false;
         }
     }

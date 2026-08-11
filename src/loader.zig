@@ -74,6 +74,7 @@ const LoadJob = struct {
     sibling_alt_path: ?[]u8,
     sibling2_path: ?[]u8,
     tried: []bool,
+    track_index: u32 = 0,
     engine_intact: bool = true,
     model_detached: bool = false,
     on_done: enum { proceed, skip, discard } = .proceed,
@@ -156,10 +157,6 @@ pub const Loader = struct {
     }
 
     fn startJob(self: *Loader, player: *Player, model: *ui.Model, job: LoadJob) void {
-        switch (job.purpose) {
-            .advance, .jump => player.track_index = 0,
-            .startup, .replay, .detached => {},
-        }
         player.engine.stop();
         self.seq += 1;
         self.job = job;
@@ -228,7 +225,6 @@ pub const Loader = struct {
             std.mem.eql(u8, cur, owned_path)
         else
             false;
-        if (!same_file) player.track_index = 0;
         const tried = try self.gpa.alloc(bool, 0);
         errdefer self.gpa.free(tried);
         const sibling = try format.companionPath("sibling_path", self.gpa, owned_path);
@@ -246,6 +242,7 @@ pub const Loader = struct {
             .sibling_alt_path = sibling_alt,
             .sibling2_path = sibling2,
             .tried = tried,
+            .track_index = if (same_file) player.track_index else 0,
         });
     }
 
@@ -290,6 +287,10 @@ pub const Loader = struct {
             .sibling_alt_path = sibling_alt,
             .sibling2_path = sibling2,
             .tried = tried,
+            .track_index = switch (purpose) {
+                .advance, .jump => 0,
+                .startup, .replay, .detached => player.track_index,
+            },
         });
     }
 
@@ -310,6 +311,7 @@ pub const Loader = struct {
         loaded: Loaded,
         detached_path: *?[]u8,
     ) !void {
+        player.track_index = job.track_index;
         if (job.purpose == .detached) {
             player.detached_path = detached_path.*;
             detached_path.* = null;
@@ -416,7 +418,7 @@ pub const Loader = struct {
                 bytes,
                 .{ .sibling = sibling, .sibling2 = sibling2, .sibling_is_alt = sibling_is_alt },
                 if (job.purpose == .detached) player.tick_rate_hz else player.rateForIndex(job.idx),
-                player.track_index,
+                job.track_index,
             ) catch |err| {
                 if (!job.model_detached) {
                     model.clearTrack();
@@ -688,7 +690,7 @@ test "Loader scans every entry then reports startup failure when all fetches fai
     }
 }
 
-test "Loader clears archive track index when loading a different file" {
+test "Loader jobs target subtrack zero only when aimed at a different file" {
     var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
@@ -703,38 +705,66 @@ test "Loader clears archive track index when loading a different file" {
 
     h.player.track_index = 5;
     try loader.request(&h.player, &h.model, .jump, 1, .next);
-    try std.testing.expectEqual(@as(u32, 0), h.player.track_index);
+    try std.testing.expectEqual(@as(u32, 0), loader.job.?.track_index);
+    try std.testing.expectEqual(@as(u32, 5), h.player.track_index);
     loader.finish(&h.model);
 
     h.player.track_index = 3;
     try loader.request(&h.player, &h.model, .advance, 0, .next);
-    try std.testing.expectEqual(@as(u32, 0), h.player.track_index);
+    try std.testing.expectEqual(@as(u32, 0), loader.job.?.track_index);
+    try std.testing.expectEqual(@as(u32, 3), h.player.track_index);
     loader.finish(&h.model);
 
     h.player.track_index = 7;
     try loader.request(&h.player, &h.model, .replay, 0, .next);
-    try std.testing.expectEqual(@as(u32, 7), h.player.track_index);
+    try std.testing.expectEqual(@as(u32, 7), loader.job.?.track_index);
     loader.finish(&h.model);
 
     h.player.track_index = 2;
     try loader.request(&h.player, &h.model, .startup, 0, .next);
-    try std.testing.expectEqual(@as(u32, 2), h.player.track_index);
+    try std.testing.expectEqual(@as(u32, 2), loader.job.?.track_index);
     loader.finish(&h.model);
 
     h.player.track_index = 4;
     try loader.requestDetached(&h.player, &h.model, "solo.imf");
-    try std.testing.expectEqual(@as(u32, 0), h.player.track_index);
+    try std.testing.expectEqual(@as(u32, 0), loader.job.?.track_index);
+    try std.testing.expectEqual(@as(u32, 4), h.player.track_index);
     loader.finish(&h.model);
 
     h.player.detached_path = try std.testing.allocator.dupe(u8, "solo.imf");
     h.player.track_index = 6;
     try loader.requestDetached(&h.player, &h.model, "solo.imf");
-    try std.testing.expectEqual(@as(u32, 6), h.player.track_index);
+    try std.testing.expectEqual(@as(u32, 6), loader.job.?.track_index);
     loader.finish(&h.model);
 
     h.player.track_index = 9;
     try loader.requestDetached(&h.player, &h.model, "other.imf");
-    try std.testing.expectEqual(@as(u32, 0), h.player.track_index);
+    try std.testing.expectEqual(@as(u32, 0), loader.job.?.track_index);
+    try std.testing.expectEqual(@as(u32, 9), h.player.track_index);
+}
+
+test "Loader keeps the playing subtrack index when every substitute fails" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const entries = [_][]const u8{ "a.imf", "b.imf" };
+    var h: LoaderHarness = .{};
+    try h.init(io, &entries);
+    defer h.deinit();
+
+    var loader = Loader{ .gpa = std.testing.allocator, .io = io };
+    defer loader.deinit();
+
+    h.player.track_index = 5;
+    try loader.request(&h.player, &h.model, .advance, 1, .next);
+    var guard: usize = 0;
+    while (loader.busy() and guard < 8) : (guard += 1) {
+        completeFetch(&loader, error.HttpRequestFailed);
+        _ = try loader.poll(&h.bridge, &h.model, &h.player);
+    }
+    try std.testing.expect(!loader.busy());
+    try std.testing.expectEqual(@as(u32, 5), h.player.track_index);
 }
 
 test "Loader publishes the AudioT companion path with the request" {

@@ -16,6 +16,7 @@ pub const State = struct {
         self: *State,
         win: vaxis.Window,
         selected_theme: Theme,
+        arena: std.mem.Allocator,
         available: []const Theme,
         selected_index: usize,
     ) void {
@@ -25,9 +26,8 @@ pub const State = struct {
         if (win.height < header_rows + 1) return;
 
         const count = available.len;
-        var title_buf: [64]u8 = undefined;
-        const title = std.fmt.bufPrint(
-            &title_buf,
+        const title = std.fmt.allocPrint(
+            arena,
             "Themes · {d} theme{s}",
             .{ count, if (count == 1) "" else "s" },
         ) catch "Themes";
