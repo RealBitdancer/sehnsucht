@@ -120,9 +120,8 @@ return fmt.MusicSource.init(src);
 `MusicSource.init` generates the `*anyopaque` adapter and vtable. Do not write
 casts or an adapter vtable in the decoder.
 
-The shared style the existing decoders follow (option structs instead of long
-parameter rows, enums for file codes, layout structs for fixed records) is
-listed under [Decoder conventions](architecture.md#decoder-conventions).
+Follow the style the existing decoders share: option structs instead of long
+parameter rows, enums for file codes, and layout structs for fixed records.
 
 The adapter also discovers these public optional methods by name:
 

@@ -272,8 +272,6 @@ room for it.
 | `tracker` | HSC, RAD | Pattern, order, instruments, OPL channel meters |
 | `stream` | VGM/VGZ, DRO, RAW, CMF, IMF/WLF, AudioT | Full-pane PCM analyzer with an info strip (song loop badge, tick rate, source system, peak meter) and a bottom master row (L/R channel meters, running loudness graph) |
 
-Architecture notes: [doc/architecture.md](doc/architecture.md).
-
 ## License
 
 MIT. See [LICENSE](LICENSE). Copyright (c) 2026 Bitdancer
