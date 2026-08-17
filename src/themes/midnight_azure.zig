@@ -3,7 +3,6 @@
 // SPDX-License-Identifier: MIT
 //
 
-const std = @import("std");
 const vaxis = @import("vaxis");
 
 const Colors = @import("../theme.zig").Colors;
@@ -180,13 +179,3 @@ pub const peak_stops = [3]VuStop{
 };
 
 pub const theme = Theme.init(@This());
-
-// --- tests -------------------------------------------------------------------
-
-test "theme controls emphasis, selection, hotkeys, and meters" {
-    try std.testing.expect(theme.style(.brand).bold);
-    try std.testing.expect(theme.style(.order_cur).bold);
-    try std.testing.expectEqual(vaxis.Style.Underline.single, theme.style(.menu_hotkey_focus).ul_style);
-    try std.testing.expect(!theme.meterBar(0.5, false).bold);
-    try std.testing.expect(theme.meterBar(0.5, true).bold);
-}

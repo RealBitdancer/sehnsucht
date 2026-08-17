@@ -49,10 +49,14 @@ const RawSource = struct {
         return fmt.rescale(ticks * speed, pit_hz, self.sample_rate, &self.frac);
     }
 
+    const max_ops_per_step: u32 = 4096;
+
     pub fn step(self: *RawSource, chip: fmt.Chip) fmt.StepResult {
+        var ops: u32 = 0;
         while (self.pos < self.records.len) {
             const rec = self.records[self.pos];
             self.pos += 1;
+            ops += 1;
 
             switch (@as(Command, @enumFromInt(rec.command))) {
                 .delay => {
@@ -64,6 +68,7 @@ const RawSource = struct {
                         if (self.pos >= self.records.len) break;
                         const next = self.records[self.pos];
                         self.pos += 1;
+                        ops += 1;
                         self.speed = @as(u16, next.param) | (@as(u16, next.command) << 8);
                         if (self.speed == 0) self.speed = 0xffff;
                     } else {
@@ -72,10 +77,15 @@ const RawSource = struct {
                 },
                 .end => {
                     if (rec.param == 0xff) break;
-                    chip.writeReg(self.bank + rec.command, rec.param);
+                    const addr = self.bank + rec.command;
+                    chip.writeReg(addr, chip_adapter.withStereoC0(addr, rec.param));
                 },
-                _ => chip.writeReg(self.bank + rec.command, rec.param),
+                _ => {
+                    const addr = self.bank + rec.command;
+                    chip.writeReg(addr, chip_adapter.withStereoC0(addr, rec.param));
+                },
             }
+            if (ops >= max_ops_per_step) return .{ .frames = 0 };
         }
         self.pos = 0;
         self.bank = 0;
@@ -195,6 +205,7 @@ fn load(
     };
 
     ctx.chip.writeReg(0x01, 0x20);
+    chip_adapter.enableNew(ctx.chip);
     ctx.chip.flush();
 
     return fmt.MusicSource.init(src);
@@ -340,4 +351,47 @@ test "raw tag title is embedded metadata" {
     try std.testing.expectEqualStrings("My Title", info.title.?);
     try std.testing.expect(info.title_embedded);
     try std.testing.expectEqualStrings("Author", info.artist.?);
+}
+
+test "raw step yields before millions of zero-delay writes" {
+    const gpa = std.testing.allocator;
+    const write_count: usize = RawSource.max_ops_per_step + 64;
+    var body = try gpa.alloc(u8, header_bytes + write_count * 2 + 4);
+    defer gpa.free(body);
+    @memcpy(body[0..8], magic);
+    body[8] = 0xff;
+    body[9] = 0xff;
+    var i: usize = 0;
+    while (i < write_count) : (i += 1) {
+        body[header_bytes + i * 2] = 0x20;
+        body[header_bytes + i * 2 + 1] = 0x01;
+    }
+    const tail = header_bytes + write_count * 2;
+    body[tail] = 0x01;
+    body[tail + 1] = 0x00;
+    body[tail + 2] = 0xff;
+    body[tail + 3] = 0xff;
+
+    const src = (try load(gpa, body, .{
+        .sample_rate = 44100,
+        .chip = fmt.noop_chip,
+        .ext = ".raw",
+    })).?;
+    defer src.deinit(gpa);
+
+    const first = src.step(fmt.noop_chip);
+    try std.testing.expectEqual(@as(u64, 0), first.frames);
+    try std.testing.expect(!first.done);
+
+    var saw_delay = false;
+    var n: u32 = 0;
+    while (n < 8) : (n += 1) {
+        const r = src.step(fmt.noop_chip);
+        if (r.frames > 0) {
+            saw_delay = true;
+            break;
+        }
+        try std.testing.expect(!r.done);
+    }
+    try std.testing.expect(saw_delay);
 }

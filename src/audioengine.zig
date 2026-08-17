@@ -142,6 +142,7 @@ pub const AudioEngine = struct {
                         @memset(buf[offset * 2 ..], 0);
                         return;
                     }
+                    self.bridge.position_frames.store(0, .release);
                 }
                 if (src.pos()) |p| self.bridge.publishTrackerPos(p);
                 if (r.frames == 0) {
@@ -349,4 +350,49 @@ test "applyGain scales, clamps, silences, and passes unity through" {
 
     applyGain(&buf, 0);
     try std.testing.expectEqualSlices(i16, &.{ 0, 0, 0, 0 }, &buf);
+}
+
+test "render resets position_frames on loop but not on halt" {
+    const LoopSrc = struct {
+        phase: u32 = 0,
+
+        pub fn step(self: *@This(), _: format.Chip) format.StepResult {
+            self.phase += 1;
+            if (self.phase == 1) return .{ .frames = 5 };
+            if (self.phase == 2) return .{ .frames = 0, .done = true };
+            return .{ .frames = 5 };
+        }
+
+        pub fn info(_: *@This()) format.TrackInfo {
+            return .{ .format_name = "test", .system = "OPL2", .visualizer = "stream" };
+        }
+
+        pub fn deinit(_: *@This(), _: std.mem.Allocator) void {}
+    };
+
+    var br = Bridge{};
+    var engine = AudioEngine{
+        .bridge = &br,
+        .device = undefined,
+        .chip = opal.Opal.init(44100),
+    };
+    var src_state = LoopSrc{};
+    engine.source = format.MusicSource.init(&src_state);
+    br.position_frames.store(100, .release);
+
+    const frame_count = 20;
+    var buf: [frame_count * 2]i16 = undefined;
+    engine.render(&buf);
+    try std.testing.expectEqual(@as(u32, 1), br.loop_count.load(.acquire));
+    try std.testing.expect(br.position_frames.load(.acquire) < 100);
+    try std.testing.expectEqual(@as(u64, 15), br.position_frames.load(.acquire));
+    try std.testing.expect(!br.paused.load(.acquire));
+
+    br.halt_at_songend.store(true, .release);
+    br.position_frames.store(50, .release);
+    src_state.phase = 1;
+    engine.wait = 0;
+    engine.render(&buf);
+    try std.testing.expect(br.paused.load(.acquire));
+    try std.testing.expectEqual(@as(u64, 50), br.position_frames.load(.acquire));
 }

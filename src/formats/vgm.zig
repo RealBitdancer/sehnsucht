@@ -64,7 +64,8 @@ const Gd3 = struct {
 };
 
 fn writeOpl(chip: fmt.Chip, port: u16, reg: u8, val: u8) void {
-    chip.writeReg(port | @as(u16, reg), val);
+    const addr = port | @as(u16, reg);
+    chip.writeReg(addr, chip_adapter.withStereoC0(addr, val));
 }
 
 const VgmSource = struct {
@@ -84,6 +85,9 @@ const VgmSource = struct {
     game: ?[]const u8 = null,
     system: ?[]const u8 = null,
     artist: ?[]const u8 = null,
+    format_name: []const u8 = "VGM",
+
+    const max_ops_per_step: u32 = 4096;
 
     fn waitFrames(self: *VgmSource, samples_44100: u32) u64 {
         const frames = fmt.rescale(samples_44100, vgm_rate, self.sample_rate, &self.frac);
@@ -101,7 +105,10 @@ const VgmSource = struct {
         }
 
         const d = self.data;
+        var ops: u32 = 0;
         while (self.cursor < self.data_end) {
+            if (ops >= max_ops_per_step) return .{ .frames = 0 };
+            ops += 1;
             const c = d[self.cursor];
             switch (c) {
                 Cmd.end => {
@@ -228,7 +235,7 @@ const VgmSource = struct {
             .artist = self.artist,
             .game = self.game,
             .system = self.system,
-            .format_name = "VGM",
+            .format_name = self.format_name,
             .opl3 = self.opl3,
             .loop = self.loop_offset != null,
             .visualizer = visualizer_name,
@@ -392,20 +399,30 @@ fn load(
         .version = version,
         .total_samples = readU32Le(inflated, Hdr.total_samples),
         .opl3 = chips.opl3,
+        .format_name = nameForExt(ctx.ext),
     };
 
     try parseGd3(gpa, inflated, src);
 
-    if (chips.opl3) enableOpl3(ctx.chip);
+    enableOpl3(ctx.chip);
     ctx.chip.flush();
 
     return fmt.MusicSource.init(src);
+}
+
+fn nameForExt(ext: []const u8) []const u8 {
+    return if (std.ascii.eqlIgnoreCase(ext, ".vgz")) "VGZ" else "VGM";
+}
+
+fn labelForPath(path: []const u8) []const u8 {
+    return nameForExt(fmt.extensionOf(path));
 }
 
 pub const format = fmt.Format{
     .name = "VGM",
     .extensions = &.{ ".vgm", ".vgz" },
     .visualizer = visualizer_name,
+    .label_for_path = labelForPath,
     .load = load,
 };
 
@@ -572,6 +589,35 @@ test "vgm header and wait math" {
     try std.testing.expectEqual(@as(u64, 735), drained.frames);
 }
 
+test "vgm zero-wait run yields before the next delay" {
+    const gpa = std.testing.allocator;
+    var d: std.ArrayList(u8) = .empty;
+    defer d.deinit(gpa);
+    const base = try makeMinimalVgm(gpa, false);
+    defer gpa.free(base);
+    try d.appendSlice(gpa, base);
+    const start = 0x80;
+    const extra = VgmSource.max_ops_per_step + 8;
+    try d.resize(gpa, start + extra + 2);
+    @memset(d.items[start .. start + extra], 0x80);
+    d.items[start + extra] = Cmd.wait_735;
+    d.items[start + extra + 1] = Cmd.end;
+    std.mem.writeInt(u32, d.items[Hdr.eof_rel..][0..4], @intCast(d.items.len - 4), .little);
+
+    var chip = opal.Opal.init(44100);
+    var src = (try fmt.load(gpa, "t.vgm", d.items, .{
+        .sample_rate = 44100,
+        .chip = chip_adapter.fromOpal(&chip),
+    })).?;
+    defer src.deinit(gpa);
+
+    const first = src.step(fmt.noop_chip);
+    try std.testing.expectEqual(@as(u64, 0), first.frames);
+    try std.testing.expect(!first.done);
+    const second = src.step(fmt.noop_chip);
+    try std.testing.expectEqual(@as(u64, 735), second.frames);
+}
+
 const RecChip = struct {
     regs: [0x200]u8 = @splat(0),
 
@@ -665,6 +711,7 @@ test "vgm wait scale to different rate" {
     try std.testing.expect(src_opt != null);
     var src = src_opt.?;
     defer src.deinit(gpa);
+    try std.testing.expectEqualStrings("VGM", src.info().format_name);
     const drained = fmt.testDrain(src, chip_adapter.fromOpal(&chip), 20);
     try std.testing.expect(drained.frames == 367 or drained.frames == 368);
 }
@@ -689,6 +736,13 @@ test "vgz gzip round-trip plays" {
     try std.testing.expect(src_opt != null);
     var src = src_opt.?;
     defer src.deinit(gpa);
+    try std.testing.expectEqualStrings("VGZ", src.info().format_name);
     const drained = fmt.testDrain(src, chip_adapter.fromOpal(&chip), 20);
     try std.testing.expectEqual(@as(u64, 735), drained.frames);
+}
+
+test "vgm path labels follow the extension" {
+    try std.testing.expectEqualStrings("VGM", labelForPath("t.vgm"));
+    try std.testing.expectEqualStrings("VGZ", labelForPath("t.vgz"));
+    try std.testing.expectEqualStrings("VGZ", fmt.displayLabelForPath("https://x/tune.VGZ").?);
 }

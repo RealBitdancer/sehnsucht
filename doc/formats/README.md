@@ -16,16 +16,20 @@ decoder state requires them.
 |--------|--------------------|-----|
 | HSC | `.hsc` | [hsc.md](hsc.md) |
 | RAD | `.rad` | [rad.md](rad.md) |
+| LDS | `.lds`, `.ld0` | [lds.md](lds.md) |
 | VGM / VGZ | `.vgm`, `.vgz` | [vgm.md](vgm.md) |
 | DRO | `.dro` | [dro.md](dro.md) |
 | RAW | `.raw` | [raw.md](raw.md) |
+| BAM | `.bam` | [bam.md](bam.md) |
+| XSM | `.xsm` | [xsm.md](xsm.md) |
 | CMF | `.cmf` | [cmf.md](cmf.md) |
 | IMF / WLF | `.imf`, `.wlf`, `.adlib` | [imf.md](imf.md) |
 | AudioT | `AUDIOT.*` / `AUDIO.*` / `AUDIOHED.*` | [audiot.md](audiot.md) |
 
-Filename matching ignores ASCII case. DRO, VGM, RAW, CMF, and RAD validate file
-magic. AudioT matches a basename family. HSC and plain IMF have no reliable
-magic and depend on their registered paths.
+Filename matching ignores ASCII case. DRO, VGM, RAW, BAM, XSM, CMF, and RAD validate
+file magic. AudioT matches a basename family. LDS claims `.lds` / `.ld0` when
+the mode byte is 0..2 and the section sizes fit. HSC and plain IMF have no
+reliable magic and depend on their registered paths.
 
 Decoder modules live under `src/formats/`. Registration order is in
 `src/registry.zig`.

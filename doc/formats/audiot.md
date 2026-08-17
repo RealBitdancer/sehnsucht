@@ -173,7 +173,8 @@ The **,** / **.** keys select the previous / next candidate and wrap after
 the last one. That index is per archive: advancing to another playlist
 entry, jumping, or opening a file from Browse starts the new archive at
 track 1. Replaying the same file (rate change, oneshot Space) keeps the
-current index.
+current index. An R rate chosen on this archive stays for those reloads. A
+playlist skip or Enter jump clears it unless you launched with `--rate`.
 
 ### IMF inside a chunk
 
@@ -195,18 +196,19 @@ that variant and reads only the two-byte form.
 
 ## Timing
 
-The rate comes from the `AUDIOT` filename, even when the user opened the
-`AUDIOHED` sibling.
+The rate comes from the opened path's extension. Opening `AUDIOHED.WL6` or
+`AUDIOT.WL6` both see `.wl6`.
 
-| AUDIOT extension | Default |
-|------------------|--------:|
+| Extension | Default |
+|-----------|--------:|
 | `.wl1`, `.wl6`, `.sod`, `.sdm` | 700 Hz |
 | `.sd1`, `.sd2`, `.sd3`, `.bs1`, `.bs6` | 700 Hz |
 | Any other extension | 560 Hz |
 
 Extension matching ignores case. A configured rate overrides the default.
 Valid overrides are 280, 560, and 700 Hz. The **R** key cycles those values
-during playback.
+during playback. Replay and `,` / `.` keep the choice. A playlist skip or
+Enter jump returns to the path default unless you launched with `--rate`.
 
 ## Playback
 
@@ -218,8 +220,11 @@ visualizer. It loops like standalone IMF.
 The synthesized title is:
 
 ```text
-decoded AUDIOT basename + " track " + selected_number + "/" + candidate_count
+decoded data-file basename + " track " + selected_number + "/" + candidate_count
 ```
+
+Opening `AUDIO.CK4` yields `AUDIO.CK4 track 1/N`. Opening `AUDIOHED.WL6` with
+the uncompressed companion yields `AUDIOT.WL6 track 1/N`.
 
 The format label is `AudioT`. The synthesized title is not embedded metadata,
 so a playlist title may replace it in the player header.
@@ -234,6 +239,9 @@ so a playlist title may replace it in the player header.
 | No valid offset pair | `EmptyAudioT` |
 | No chunk passes the music filter | `NoMusicInAudioT` |
 | Selected chunk cannot enter IMF framing | `BadImfInAudioT` |
+
+A candidate that passes the size and `RIFF` filter can still fail IMF framing.
+That fails the archive. The decoder does not try the next candidate.
 
 Companion file read errors propagate from the underlying file or network I/O.
 A corrupt dictionary or a truncated compressed chunk skips that chunk rather

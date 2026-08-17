@@ -106,6 +106,7 @@ fn rateForExt(ext: []const u8) u32 {
 
 fn formatLabel(rate: u32, ext: []const u8) []const u8 {
     if (std.ascii.eqlIgnoreCase(ext, ".wlf") or rate == 700) return "WLF";
+    if (std.ascii.eqlIgnoreCase(ext, ".adlib")) return "ADLIB";
     return "IMF";
 }
 
@@ -296,6 +297,7 @@ test "adlib wrapper: metadata and body play, plain files pass through" {
     try std.testing.expectEqualStrings("My Song", track.title.?);
     try std.testing.expect(track.title_embedded);
     try std.testing.expectEqualStrings("My Game", track.game.?);
+    try std.testing.expectEqualStrings("ADLIB", track.format_name);
     try std.testing.expectEqual(@as(u64, 3 * 44100 / 560), src.durationFrames().?);
 
     const no_body: []const u8 = "ADLIB" ++ [_]u8{ 1, 0, 0, 1 };
@@ -474,7 +476,14 @@ test "imf wlf defaults to 700" {
     var src = src_opt.?;
     defer src.deinit(gpa);
     try std.testing.expectEqual(@as(u32, 700), src.getTickRate().?);
+    try std.testing.expectEqualStrings("WLF", src.info().format_name);
     try std.testing.expectEqual(@as(?u64, 44100 / 700), src.durationFrames());
+}
+
+test "imf path labels follow the extension" {
+    try std.testing.expectEqualStrings("IMF", labelForPath("a.imf"));
+    try std.testing.expectEqualStrings("WLF", labelForPath("a.wlf"));
+    try std.testing.expectEqualStrings("ADLIB", labelForPath("x.adlib"));
 }
 
 test "openStream carries archive metadata into TrackInfo" {

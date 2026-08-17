@@ -294,6 +294,15 @@ fn applyUiAction(
     }
 }
 
+fn persistLiveRate(player: *Player, model: *ui.Model) void {
+    const hz = model.tick_rate_hz orelse return;
+    if (player.tick_rate_hz != 0) {
+        player.tick_rate_hz = hz;
+    } else {
+        player.live_rate_hz = hz;
+    }
+}
+
 fn requestReplay(
     gpa: std.mem.Allocator,
     loader: *Loader,
@@ -391,6 +400,7 @@ fn handleUiEvent(
             if (model.handleKey(key) == .quit) {
                 action.* = .quit;
             }
+            if (key.codepoint == 'r' or key.codepoint == 'R') persistLiveRate(player, model);
         },
         .mouse => |mouse| {
             if (model.handleMouse(mouse) == .quit) {
@@ -433,11 +443,14 @@ fn handlePlaylistKey(
         '.' => if (model.track.archive_track_count > 1 and action.* == .none) {
             action.* = .archive_next;
         },
-        // A parked one-shot has a finished decoder with nothing to resume into,
-        // so Space reloads it. Every other Space is the shell's pause toggle.
+        // Halt parks both one-shots and the last looping playlist track.
+        // Space reloads those. A mid-song pause stays a pause toggle.
         vaxis.Key.space => {
-            const parked = model.has_track and !model.track.loop and
+            const halted = model.has_track and
                 bridge.paused.load(.acquire) and bridge.loop_count.load(.acquire) > 0;
+            const last_loop_parked = model.track.loop and
+                model.playlist_playing and model.playlist_count > 1 and !model.can_playlist_next;
+            const parked = halted and (!model.track.loop or last_loop_parked);
             if (!parked) return false;
             if (action.* == .none) action.* = .replay;
         },

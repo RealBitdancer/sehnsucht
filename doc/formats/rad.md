@@ -22,7 +22,9 @@ public-domain RAD player by Shayde/Reality (embedded in
 
 Wrong magic declines the file. Other version bytes return
 `error.UnsupportedRadVersion`. A truncated header, instrument list, or order
-list returns `error.InvalidRad`. Truncated pattern data does not: see
+list returns `error.InvalidRad`. A v2 pattern whose size field is missing or
+overruns the file is also `error.InvalidRad`. A line that starts validly but
+runs out of note bytes does not: see
 [Damaged pattern tails](#damaged-pattern-tails).
 
 ## File layout
@@ -46,8 +48,9 @@ Flags:
 | 6 | Slow timer (18.2 Hz instead of 50 Hz) |
 | 7 | v1: description present. Always present in v2 |
 
-Optional BPM (v2, flag bit 5): little-endian `u16`, valid range 46..300.
-Hertz for playback is `bpm * 2 / 5`.
+Optional BPM (v2, flag bit 5): little-endian `u16`. The decoder does not
+clamp the Reality range 46..300. Hertz for playback is `bpm * 2 / 5` when
+flag bit 6 is clear. A stored zero becomes a one-denominator tick.
 
 Optional description: NUL-terminated text. Control byte `0x01` means newline in
 some editors. sehnsucht stores the first line (text before the first control
@@ -86,7 +89,10 @@ Instrument numbers are 1-based. Missing numbers stay blank.
 | Order count | 1 |
 | Entries | count bytes |
 
-Bit 7 set means a jump marker: low 7 bits are the new order index.
+Bit 7 set means a jump marker: low 7 bits are the new order index. The jump
+is applied when playback advances onto that slot, not when the slot is the
+one currently playing. Playing a jump slot uses the low 7 bits as a pattern
+index.
 
 ### Patterns
 
@@ -117,11 +123,14 @@ lines. Streams with more are invalid.
 ### Damaged pattern tails
 
 Archived RAD files are sometimes a byte or two short, leaving the final note of
-the final pattern without its parameter byte. Every earlier pattern is intact,
-so the decoder keeps the cells that decoded, ends that pattern there, and plays
-the tune. The reference player rejects the whole file instead. This follows the
-same rule the IMF decoder applies to a partial trailing record: drop the
-incomplete tail, not the file.
+the final pattern without its parameter byte. If the line header and the bytes
+before that gap already decoded, the decoder keeps those cells, ends that
+pattern there, and plays the tune. The reference player rejects the whole file
+instead. This follows the same rule the IMF decoder applies to a partial
+trailing record: drop the incomplete tail, not the file.
+
+A v2 pattern whose two-byte size is missing, or whose declared size runs past
+the end of the file, is not a short last note. That file is `error.InvalidRad`.
 
 ## Decoding
 
@@ -153,8 +162,8 @@ play the current line when it expires, then apply continuous slides.
 | Condition | Rate |
 |-----------|------|
 | Default | 50 Hz |
-| Flag bit 6 | 18.2 Hz (`5/91` second ticks) |
-| v2 BPM present | `bpm * 2 / 5` Hz |
+| Flag bit 6 | 18.2 Hz (`5/91` second ticks). Wins over BPM if both are set |
+| v2 BPM present, bit 6 clear | `bpm * 2 / 5` Hz |
 
 Speed is the number of ticks per row. Frame conversion uses
 `rescale(tick_num, tick_den, sample_rate)`.
@@ -178,7 +187,8 @@ has no separate artist field.
 | Version not 1.0 or 2.1 | `error.UnsupportedRadVersion` |
 | Truncated or oversized header, instruments, or order list | `error.InvalidRad` |
 | Pattern with more than 64 lines, or a row past 63 | `error.InvalidRad` |
-| Truncated pattern data | Keep the decoded cells and play |
+| v2 pattern size missing or past the end of the file | `error.InvalidRad` |
+| Truncated note payload after a valid line | Keep the decoded cells and play |
 
 ## Compatibility notes
 
@@ -190,5 +200,6 @@ has no separate artist field.
   outputs enabled.
 * Pattern numbers referenced in the order list but missing from the file are
   treated as empty patterns.
-* A file cut short inside pattern data still plays, losing only the incomplete
-  tail. The reference player treats the same file as unplayable.
+* A file whose last line is short of a parameter byte still plays, losing only
+  that tail. A v2 pattern header whose size word is missing or overruns is
+  rejected. The reference player treats a short last parameter as unplayable.

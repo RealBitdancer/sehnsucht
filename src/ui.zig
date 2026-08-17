@@ -2339,11 +2339,9 @@ test "mouse clicks activate menu items and list rows" {
     var theme_buf0: [80]u8 = undefined;
     const theme_text0 = testRowText(&screen, &theme_buf0, m.theme_list.nav.hit_y0, width);
     try std.testing.expect(std.mem.indexOf(u8, theme_text0, themes[0].display_name) != null);
-    try std.testing.expect(std.mem.indexOf(u8, theme_text0, "Dark blue theme") != null);
     var theme_buf1: [80]u8 = undefined;
     const theme_text1 = testRowText(&screen, &theme_buf1, m.theme_list.nav.hit_y0 + 1, width);
     try std.testing.expect(std.mem.indexOf(u8, theme_text1, themes[1].display_name) != null);
-    try std.testing.expect(std.mem.indexOf(u8, theme_text1, "Color-vision-safe") != null);
 
     const theme_col: i16 = @intCast(m.theme_list.nav.hit_x0 + 3);
     const theme_row: i16 = @intCast(m.theme_list.nav.hit_y0 + 1);

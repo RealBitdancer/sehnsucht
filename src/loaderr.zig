@@ -15,16 +15,29 @@ pub fn loadErrorLabel(err: anyerror) []const u8 {
         error.NotDir => "not a directory",
         error.EndOfStream => "truncated file",
         error.NonOplVgm => "not an OPL-family VGM",
+        error.NotVgm => "not a VGM file",
+        error.InvalidVgmOffset => "invalid VGM data offset",
+        error.GzipFailed => "gzip inflate failed",
+        error.TruncatedDro => "truncated DRO file",
+        error.UnsupportedDro2 => "unsupported DRO2 options",
         error.InvalidCmf => "invalid CMF file",
         error.InvalidRad => "invalid RAD file",
         error.InvalidRaw => "invalid RAW file",
+        error.InvalidBam => "invalid BAM file",
+        error.InvalidXsm => "invalid XSM file",
+        error.InvalidLds => "invalid LDS file",
         error.AudioTNeedsSibling => "missing AudioT companion",
         error.AudioTNeedsDict => "missing AUDIODCT dictionary",
+        error.BadAudioHed => "invalid AUDIOHED table",
+        error.EmptyAudioT => "empty AudioT archive",
+        error.NoMusicInAudioT => "no music in AudioT archive",
+        error.BadImfInAudioT => "invalid IMF stream in AudioT",
         error.UnsupportedRadVersion => "unsupported RAD version",
         error.UnplayableFile => "not a playable music file",
         error.UnsupportedUrlScheme => "unsupported URL scheme",
         error.HttpRequestFailed => "HTTP request failed",
         error.DownloadTimeout => "download timed out",
+        error.ReadFailed => "download interrupted",
         error.StreamTooLong => "file too large",
         error.UnsupportedCompressionMethod => "unsupported HTTP compression",
         error.ConnectionRefused => "connection refused",
@@ -73,8 +86,15 @@ fn printStderr(io: Io, comptime fmt: []const u8, args: anytype) void {
 test "loadErrorLabel maps common failures to plain phrases" {
     try std.testing.expectEqualStrings("file not found", loadErrorLabel(error.FileNotFound));
     try std.testing.expectEqualStrings("download timed out", loadErrorLabel(error.DownloadTimeout));
+    try std.testing.expectEqualStrings("download interrupted", loadErrorLabel(error.ReadFailed));
     try std.testing.expectEqualStrings("truncated file", loadErrorLabel(error.EndOfStream));
     try std.testing.expectEqualStrings("invalid RAW file", loadErrorLabel(error.InvalidRaw));
+    try std.testing.expectEqualStrings("invalid BAM file", loadErrorLabel(error.InvalidBam));
+    try std.testing.expectEqualStrings("invalid XSM file", loadErrorLabel(error.InvalidXsm));
+    try std.testing.expectEqualStrings("invalid LDS file", loadErrorLabel(error.InvalidLds));
+    try std.testing.expectEqualStrings("not a VGM file", loadErrorLabel(error.NotVgm));
+    try std.testing.expectEqualStrings("truncated DRO file", loadErrorLabel(error.TruncatedDro));
+    try std.testing.expectEqualStrings("no music in AudioT archive", loadErrorLabel(error.NoMusicInAudioT));
     try std.testing.expectEqualStrings("unknown host", loadErrorLabel(error.UnknownHostName));
     try std.testing.expectEqualStrings("NoResult", loadErrorLabel(error.NoResult));
 }

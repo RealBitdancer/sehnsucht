@@ -5,7 +5,7 @@
 | Version | Supported |
 | ------- | --------- |
 | latest main | yes |
-| 0.1.x releases | yes |
+| 0.2.x releases | yes |
 | anything older | no |
 
 ## Reporting a vulnerability
@@ -20,12 +20,14 @@ can expect an acknowledgment within a week and a fix as fast as severity warrant
 ## Scope
 
 The attack surface is file parsing and audio/UI glue. The player reads untrusted music
-files (HSC, RAD, VGM/VGZ, DRO, RAW, CMF, IMF/WLF, AudioT), including files fetched over
+files (HSC, RAD, LDS, VGM/VGZ, DRO, RAW, BAM, XSM, CMF, IMF/WLF, AudioT), including files fetched over
 http(s), and treats them with suspicion. Reads are bounds-checked,
 input size is capped, and release builds default to ReleaseSafe so the safety checks stay
-on. Malformed input should produce a clear refusal and a nonzero exit code, never memory
-corruption or a runaway process. If you find an input that does otherwise, that is exactly
-the report we want.
+on. Malformed input should produce a clear refusal, never memory
+corruption or a runaway process. A startup argument that cannot play exits
+with a nonzero code after teardown. Once the TUI is up, a later load failure
+stays in the session and marks the entry unplayable. If you find an input that
+does otherwise, that is exactly the report we want.
 
 OPL synthesis is [opal](https://github.com/RealBitdancer/opal) via
 [opal-zig](https://github.com/RealBitdancer/opal-zig). Audio device I/O goes through

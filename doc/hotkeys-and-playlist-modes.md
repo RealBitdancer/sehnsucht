@@ -143,10 +143,17 @@ Enable rules:
 | `+` | muted or volume &lt; 100. Volume is a global setting, so the chips stay lit while idle, matching the keys. Mute still allows both steps because a step unmutes |
 | `-` | muted or volume &gt; 0 |
 | `M` | `has_track` |
+| `R` | always while shown (cycles 280 / 560 / 700) |
 | `,` / `.` | always while shown (reloads the archive at the previous or next track, wrapping) |
 | `L` / `S` | always while shown (toggles always apply) |
 | `[` | `Player.canStep(.prev)` |
 | `]` | `Player.canStep(.next)` |
+
+`R` stores the chosen rate on the player. Space replay and AudioT `,` / `.`
+keep it. Playlist advance (`]` / `[` / song end) and Enter jump clear it, so
+the next file uses `--rate` or the path default. If you launched with
+`--rate`, R updates that session override instead of a per-file sticky
+rate.
 
 Model fields synced from the player each frame (and on S/L toggle):
 
@@ -161,12 +168,13 @@ playback exactly at the songend edge, in two cases:
 - a one-shot track (`TrackInfo.loop` false, its finished decoder yields
   only silence) playing alone or detached
 
-Space on a parked one-shot goes through `Action.replay`, which
-`main.applyUiAction` hands to `Loader.request(.replay, …)` (reload from
-the top, then unpause), because a finished decoder has nothing to resume
-into. That case is matched inside `main.handlePlaylistKey`, and every other
-Space falls through to the shell's pause toggle. A mid-track pause has
-`loop_count == 0` and resumes normally.
+Space on a parked one-shot, or on the last looping track of a finished
+pass, goes through `Action.replay`, which `main.applyUiAction` hands to
+`Loader.request(.replay, …)` (reload from the top, then unpause). That
+case is matched inside `main.handlePlaylistKey`. Every other Space falls
+through to the shell's pause toggle. A mid-track pause has `loop_count == 0`
+and resumes normally. A pause on a looping solo file after a wrap is still
+a pause: playlist loop-park requires more than one entry and no next step.
 
 ---
 
@@ -484,11 +492,23 @@ visible on the canvas), not frame chrome.
    loop behavior and keeps its `Song` prefix so the two cannot be read as
    one setting. Do not add a third unqualified loop/once anywhere.
 
-9. **Resuming a parked one-shot:** plain unpause would play the finished
-   decoder's eternal silence. Space must route to `Action.replay` when
-   `paused and loop_count > 0 and !track.loop`.
+9a. **Skip while loading:** each extra `]` / `[` while an advance is in
+   flight increments a skip count. When the fetch finishes, the loader
+   walks that many candidates. One key is one skip.
 
-10. **Mute outlives the track:** `Bridge.resetTrackState` keeps `volume`
+9. **Resuming a parked track:** Space must route to `Action.replay` when
+   `paused and loop_count > 0` and the track is a one-shot, or the last
+   looping row of a finished pass. Plain unpause on a one-shot would play
+   silence. Plain unpause on a looping last track would continue on a
+   dirty chip with the clock past duration.
+
+10. **R rate vs next file:** replay and archive steps must keep the live
+    rate. Advance and jump must clear it before the next file is assembled,
+    or the next playlist row inherits 700 Hz from a WLF you just left. A
+    `--rate` launch is the exception: that value is the session default, and
+    R updates it.
+
+11. **Mute outlives the track:** `Bridge.resetTrackState` keeps `volume`
     and `muted` on purpose, so `]`, auto-advance, and Enter jumps all
     land on a silent track while mute is on. That is a global setting
     behaving like one, but it reads as a dead player, so the state must
@@ -557,6 +577,9 @@ visible on the canvas), not frame chrome.
       lights after it, and pressing `[` while dim changes nothing
 - [ ] End of list without loop: playback pauses at the songend edge,
       Space replays the last track, `[` steps back
+- [ ] R on an IMF/WLF/AudioT track: replay and `,` / `.` keep the rate, a
+      playlist skip starts the next file at its default, and `--rate` keeps
+      the session override across that skip
 - [ ] S on, L on: after last track, new shuffle and continue (never the
       same track twice in a row)
 - [ ] S off, L off: linear ends, and `[` / `]` match ends of file order

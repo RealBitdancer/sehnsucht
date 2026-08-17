@@ -149,8 +149,10 @@ Octaves 0 through 7 are valid. A value outside that range acts as note off.
 Setting an instrument consumes the entire cell. No effect or note is processed
 after it. Instrument indices 128 through 255 are ignored.
 
-Every nonzero note with bit 7 clear resets the channel's accumulated slide.
-This includes note-off and invalid-octave values.
+Every nonzero note with bit 7 clear resets the channel's accumulated slide
+before the effect runs. This includes note-off and invalid-octave values. The
+cell order is therefore: clear slide if the note is nonzero, apply the
+effect, then play the note.
 
 #### Effect byte
 
@@ -173,11 +175,12 @@ The high nibble selects the command. The low nibble is its argument.
 | `0xFn` | Set speed to `n + 1` |
 
 For `0x1n` and `0x2n`, an effect-only cell writes the adjusted frequency
-immediately. A cell containing a note applies the accumulated slide to that
-note instead.
+immediately. A cell that also has a note has already cleared the old slide,
+so the new `n` is what that note uses.
 
 `0xDn` assigns order position `n` before normal pattern-break advancement.
-The next order position is therefore `(n + 1) % 50`.
+The next order position is therefore `(n + 1) % 50`. It also reports a song
+boundary.
 
 `0x6n` writes `(n << 1) | (instrument_byte_8 & 1)` to the channel's `0xC0`
 register.
@@ -221,9 +224,15 @@ value. It is sign-extended to 16 bits, reinterpreted as unsigned, and added to
 the 16-bit frequency. Saturating arithmetic produces different music.
 
 Key-on is bit `0x20` of the channel's `0xB0` register. Ordinary melodic notes
-set it. Note off clears it. Before each valid note, write zero to the channel's
-`0xB0` register, then write the frequency and new key state. This forced
-key-off edge retriggers repeated notes.
+set it. Note off clears that bit and writes the stored `0xB0` value. An
+instrument-set cell does the same key-off before programming the new patch.
+It does not write `0xB0 = 0`, which would drop the pitch to octave 0 during
+release.
+
+Before each valid note, write zero to the channel's `0xB0` register, then
+write the frequency and new key state. That forced key-off edge is consumed
+in the same decoder tick, before any audio is rendered, and retriggers
+repeated notes.
 
 ### Rhythm mode
 
@@ -272,7 +281,8 @@ For each processed row:
 
 1. Resolve the current order entry.
 2. Process channels 0 through 8 in order.
-3. Apply each cell's effect before its note.
+3. For each cell: if the note is nonzero and bit 7 is clear, clear
+   accumulated slide. Then apply the effect. Then play the note.
 4. Advance the row, or apply a pattern break.
 5. Advance the order position when the row wraps from 63 to 0.
 
@@ -297,3 +307,8 @@ under [Order list](#order-list). Incomplete trailing pattern bytes are ignored.
 
 HSC is OPL2 only. It does not contain OPL3 four-operator voices, PCM data, or a
 register log.
+
+AdPlug's `setinstr` writes `B0 = 0` and leaves the stored key-on bit set. A
+later slide with no note then writes that stored `B0` and keys the note back
+on. sehnsucht clears key-on in the stored `B0` and writes that value, so
+release keeps pitch and a later slide stays keyed off.

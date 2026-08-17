@@ -1,0 +1,62 @@
+#EXTM3U
+#PLAYLIST:Bob's Adlib Music
+# Remote BAM set from Modland. Uncompressed OPL2 event streams (CBMF).
+
+#EXTINF:-1,Arab
+https://modland.com/pub/modules/Ad%20Lib/Bob's%20AdLib%20Music/-%20unknown/arab.bam
+#EXTINF:-1,Aria Duet
+https://modland.com/pub/modules/Ad%20Lib/Bob's%20AdLib%20Music/-%20unknown/arieduet.bam
+#EXTINF:-1,Baba Yaga
+https://modland.com/pub/modules/Ad%20Lib/Bob's%20AdLib%20Music/-%20unknown/babayaga.bam
+#EXTINF:-1,Bydlo
+https://modland.com/pub/modules/Ad%20Lib/Bob's%20AdLib%20Music/-%20unknown/bydlo.bam
+#EXTINF:-1,Castle
+https://modland.com/pub/modules/Ad%20Lib/Bob's%20AdLib%20Music/-%20unknown/castle.bam
+#EXTINF:-1,Catacomb
+https://modland.com/pub/modules/Ad%20Lib/Bob's%20AdLib%20Music/-%20unknown/catacomb.bam
+#EXTINF:-1,Chuffy
+https://modland.com/pub/modules/Ad%20Lib/Bob's%20AdLib%20Music/-%20unknown/chuffy.bam
+#EXTINF:-1,Clfalse
+https://modland.com/pub/modules/Ad%20Lib/Bob's%20AdLib%20Music/-%20unknown/clfalse.bam
+#EXTINF:-1,Clown
+https://modland.com/pub/modules/Ad%20Lib/Bob's%20AdLib%20Music/-%20unknown/clown.bam
+#EXTINF:-1,Crusader
+https://modland.com/pub/modules/Ad%20Lib/Bob's%20AdLib%20Music/-%20unknown/crusader.bam
+#EXTINF:-1,Decold
+https://modland.com/pub/modules/Ad%20Lib/Bob's%20AdLib%20Music/-%20unknown/decold.bam
+#EXTINF:-1,E Fugue
+https://modland.com/pub/modules/Ad%20Lib/Bob's%20AdLib%20Music/-%20unknown/efugue.bam
+#EXTINF:-1,Faust
+https://modland.com/pub/modules/Ad%20Lib/Bob's%20AdLib%20Music/-%20unknown/faust.bam
+#EXTINF:-1,Gnome
+https://modland.com/pub/modules/Ad%20Lib/Bob's%20AdLib%20Music/-%20unknown/gnome.bam
+#EXTINF:-1,Green
+https://modland.com/pub/modules/Ad%20Lib/Bob's%20AdLib%20Music/-%20unknown/green.bam
+#EXTINF:-1,Greensleeves
+https://modland.com/pub/modules/Ad%20Lib/Bob's%20AdLib%20Music/-%20unknown/greensl.bam
+#EXTINF:-1,Hark the Herald
+https://modland.com/pub/modules/Ad%20Lib/Bob's%20AdLib%20Music/-%20unknown/harkten.bam
+#EXTINF:-1,Indjoe
+https://modland.com/pub/modules/Ad%20Lib/Bob's%20AdLib%20Music/-%20unknown/indjoe.bam
+#EXTINF:-1,Mortua
+https://modland.com/pub/modules/Ad%20Lib/Bob's%20AdLib%20Music/-%20unknown/mortua.bam
+#EXTINF:-1,Ride of the Valkyries
+https://modland.com/pub/modules/Ad%20Lib/Bob's%20AdLib%20Music/-%20unknown/rvalkyry.bam
+#EXTINF:-1,Sabre Dance
+https://modland.com/pub/modules/Ad%20Lib/Bob's%20AdLib%20Music/-%20unknown/sabre.bam
+#EXTINF:-1,Scherzo
+https://modland.com/pub/modules/Ad%20Lib/Bob's%20AdLib%20Music/-%20unknown/scherzo.bam
+#EXTINF:-1,Serenade
+https://modland.com/pub/modules/Ad%20Lib/Bob's%20AdLib%20Music/-%20unknown/serenade.bam
+#EXTINF:-1,Snow
+https://modland.com/pub/modules/Ad%20Lib/Bob's%20AdLib%20Music/-%20unknown/snow.bam
+#EXTINF:-1,Solidroc
+https://modland.com/pub/modules/Ad%20Lib/Bob's%20AdLib%20Music/-%20unknown/solidroc.bam
+#EXTINF:-1,Tango
+https://modland.com/pub/modules/Ad%20Lib/Bob's%20AdLib%20Music/-%20unknown/tango.bam
+#EXTINF:-1,Thunders
+https://modland.com/pub/modules/Ad%20Lib/Bob's%20AdLib%20Music/-%20unknown/thunders.bam
+#EXTINF:-1,Verse 3
+https://modland.com/pub/modules/Ad%20Lib/Bob's%20AdLib%20Music/-%20unknown/verse3.bam
+#EXTINF:-1,Westport
+https://modland.com/pub/modules/Ad%20Lib/Bob's%20AdLib%20Music/-%20unknown/westport.bam

@@ -119,13 +119,15 @@ const DroSource = struct {
             },
             0x04 => {
                 if (self.pos + 1 >= self.data.len) return self.rewindDone();
-                chip.writeReg(self.bank + self.data[self.pos], self.data[self.pos + 1]);
+                const addr = self.bank + self.data[self.pos];
+                chip.writeReg(addr, chip_adapter.withStereoC0(addr, self.data[self.pos + 1]));
                 self.pos += 2;
                 return .{ .frames = 0 };
             },
             else => {
                 if (self.pos >= self.data.len) return self.rewindDone();
-                chip.writeReg(self.bank + cmd, self.data[self.pos]);
+                const addr = self.bank + cmd;
+                chip.writeReg(addr, chip_adapter.withStereoC0(addr, self.data[self.pos]));
                 self.pos += 1;
                 return .{ .frames = 0 };
             },
@@ -152,7 +154,8 @@ const DroSource = struct {
             idx &= 0x7F;
         }
         if (idx >= self.codemap.len) return self.rewindDone();
-        chip.writeReg(reg_bank + self.codemap[idx], value);
+        const addr = reg_bank + self.codemap[idx];
+        chip.writeReg(addr, chip_adapter.withStereoC0(addr, value));
         return .{ .frames = 0 };
     }
 
@@ -233,12 +236,12 @@ fn load(
 
     const version_word = fmt.readU32Le(data, 8);
     if (version_word == 0 or version_word == 0x00010000) {
-        return try loadV1(gpa, data, ctx.sample_rate);
+        return try loadV1(gpa, data, ctx);
     }
     if (version_word == 2) {
-        return try loadV2(gpa, data, ctx.sample_rate);
+        return try loadV2(gpa, data, ctx);
     }
-    return try loadV1Old(gpa, data, ctx.sample_rate);
+    return try loadV1Old(gpa, data, ctx);
 }
 
 const SourceOptions = struct {
@@ -252,7 +255,7 @@ const SourceOptions = struct {
 fn makeSource(
     gpa: std.mem.Allocator,
     stream: []const u8,
-    sample_rate: u32,
+    ctx: fmt.LoadContext,
     opts: SourceOptions,
 ) !fmt.MusicSource {
     const copy = try gpa.dupe(u8, stream);
@@ -264,7 +267,7 @@ fn makeSource(
     errdefer gpa.destroy(src);
     src.* = .{
         .data = copy,
-        .sample_rate = sample_rate,
+        .sample_rate = ctx.sample_rate,
         .version = opts.version,
         .hardware = hardware,
         .short_delay_code = opts.short_code,
@@ -273,6 +276,8 @@ fn makeSource(
         .total_ms = totalMs(copy, opts.version, opts.short_code, opts.long_code, opts.codemap.len),
         .title = title,
     };
+    if (hardware == .dual_opl2 or hardware == .opl3) chip_adapter.enableNew(ctx.chip);
+    ctx.chip.flush();
     return fmt.MusicSource.init(src);
 }
 
@@ -281,14 +286,14 @@ fn clampToDeclaredLength(stream: []const u8, length_bytes: u32) []const u8 {
     return stream[0..length_bytes];
 }
 
-fn loadV1Old(gpa: std.mem.Allocator, data: []const u8, sample_rate: u32) !fmt.MusicSource {
+fn loadV1Old(gpa: std.mem.Allocator, data: []const u8, ctx: fmt.LoadContext) !fmt.MusicSource {
     if (data.len < 17) return error.TruncatedDro;
 
     const stream = clampToDeclaredLength(data[17..], fmt.readU32Le(data, 12));
-    return makeSource(gpa, stream, sample_rate, .{ .version = .v1, .hw_code = data[16] });
+    return makeSource(gpa, stream, ctx, .{ .version = .v1, .hw_code = data[16] });
 }
 
-fn loadV1(gpa: std.mem.Allocator, data: []const u8, sample_rate: u32) !fmt.MusicSource {
+fn loadV1(gpa: std.mem.Allocator, data: []const u8, ctx: fmt.LoadContext) !fmt.MusicSource {
     if (data.len < 21) return error.TruncatedDro;
 
     // The 24-byte header pads the hardware byte to a word. The early 21-byte
@@ -297,10 +302,10 @@ fn loadV1(gpa: std.mem.Allocator, data: []const u8, sample_rate: u32) !fmt.Music
     const header_size: usize = if (padded_header) 24 else 21;
 
     const stream = clampToDeclaredLength(data[header_size..], fmt.readU32Le(data, 16));
-    return makeSource(gpa, stream, sample_rate, .{ .version = .v1, .hw_code = data[20] });
+    return makeSource(gpa, stream, ctx, .{ .version = .v1, .hw_code = data[20] });
 }
 
-fn loadV2(gpa: std.mem.Allocator, data: []const u8, sample_rate: u32) !fmt.MusicSource {
+fn loadV2(gpa: std.mem.Allocator, data: []const u8, ctx: fmt.LoadContext) !fmt.MusicSource {
     if (data.len < 26) return error.TruncatedDro;
 
     const pairs = fmt.readU32Le(data, 12);
@@ -317,7 +322,7 @@ fn loadV2(gpa: std.mem.Allocator, data: []const u8, sample_rate: u32) !fmt.Music
     const stream_off = 26 + codemap_len;
     // Widen before the multiply: pairs is attacker-controlled and pairs * 2 overflows a 32-bit usize.
     const stream_len: usize = @intCast(@min(@as(u64, data.len - stream_off), @as(u64, pairs) * 2));
-    return makeSource(gpa, data[stream_off .. stream_off + stream_len], sample_rate, .{
+    return makeSource(gpa, data[stream_off .. stream_off + stream_len], ctx, .{
         .version = .v2,
         .hw_code = data[20],
         .short_code = data[23],

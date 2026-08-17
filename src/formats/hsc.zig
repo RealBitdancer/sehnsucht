@@ -191,7 +191,8 @@ const HscSource = struct {
         const op = op_offset[chan];
         self.channel[chan].instrument = index;
         self.last_instrument = index;
-        chip.writeReg(Reg.key_block + chan, 0);
+        self.key_block[chan] &= ~@as(u8, key_on_bit);
+        chip.writeReg(Reg.key_block + chan, self.key_block[chan]);
         chip.writeReg(Reg.feedback + chan, ins.feedback_conn);
         chip.writeReg(Reg.carrier_char + op, ins.carrier_char);
         chip.writeReg(Reg.modulator_char + op, ins.modulator_char);
@@ -653,4 +654,47 @@ test "hsc reports no title so the shell falls back to the file name" {
     })).?;
     defer src.deinit(gpa);
     try std.testing.expect(src.info().title == null);
+}
+
+test "hsc instrument-set keys off without zeroing block" {
+    const Rec = struct {
+        b0: [channels]u8 = @splat(0),
+        fn write(ptr: *anyopaque, reg: u16, val: u8) void {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            if (reg >= Reg.key_block and reg < Reg.key_block + channels) {
+                self.b0[reg - Reg.key_block] = val;
+            }
+        }
+        fn flush(_: *anyopaque) void {}
+        fn chip(self: *@This()) fmt.Chip {
+            return .{
+                .ptr = self,
+                .vtable = &.{ .writeReg = write, .flush = flush },
+            };
+        }
+    };
+
+    const gpa = std.testing.allocator;
+    var data: [header_bytes + pattern_bytes]u8 = @splat(0);
+    data[instrument_count * instrument_size] = 0;
+    data[header_bytes + 0] = 37;
+    data[header_bytes + channels * 2] = 0x80;
+    data[header_bytes + channels * 2 + 1] = 1;
+
+    var rec = Rec{};
+    const src = (try load(gpa, &data, .{
+        .sample_rate = 44100,
+        .chip = rec.chip(),
+        .ext = ".hsc",
+        .name = "t.hsc",
+    })).?;
+    defer src.deinit(gpa);
+
+    _ = src.step(rec.chip());
+    try std.testing.expect(rec.b0[0] & key_on_bit != 0);
+
+    _ = src.step(rec.chip());
+    _ = src.step(rec.chip());
+    try std.testing.expect(rec.b0[0] & key_on_bit == 0);
+    try std.testing.expect(rec.b0[0] != 0);
 }

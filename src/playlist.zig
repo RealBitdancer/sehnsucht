@@ -388,9 +388,26 @@ test "format column labels come from the owning format" {
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     try std.testing.expectEqualStrings("AudioT", formatLabel(arena, "music/audiot/AUDIOT.DEMO"));
-    try std.testing.expectEqualStrings("VGM", formatLabel(arena, "a.vgz"));
-    try std.testing.expectEqualStrings("WLF", formatLabel(arena, "a.wlf"));
+    try std.testing.expectEqualStrings("AudioT", formatLabel(arena, "AUDIO.WL6"));
+    try std.testing.expectEqualStrings("AudioT", formatLabel(arena, "AUDIOHED.SOD"));
     try std.testing.expectEqualStrings("HSC", formatLabel(arena, "http://x/tune.hsc"));
+    try std.testing.expectEqualStrings("RAD", formatLabel(arena, "song.rad"));
+    try std.testing.expectEqualStrings("LDS", formatLabel(arena, "song.lds"));
+    try std.testing.expectEqualStrings("LD0", formatLabel(arena, "old.ld0"));
+    try std.testing.expectEqualStrings(
+        "LD0",
+        formatLabel(arena, "https://raw.githubusercontent.com/adplug/adplug/master/test/testmus/GENORI.LD0"),
+    );
+    try std.testing.expectEqualStrings("VGM", formatLabel(arena, "a.vgm"));
+    try std.testing.expectEqualStrings("VGZ", formatLabel(arena, "a.vgz"));
+    try std.testing.expectEqualStrings("DRO", formatLabel(arena, "cap.dro"));
+    try std.testing.expectEqualStrings("RAW", formatLabel(arena, "cap.raw"));
+    try std.testing.expectEqualStrings("BAM", formatLabel(arena, "tune.bam"));
+    try std.testing.expectEqualStrings("XSM", formatLabel(arena, "tune.xsm"));
+    try std.testing.expectEqualStrings("CMF", formatLabel(arena, "tune.cmf"));
+    try std.testing.expectEqualStrings("IMF", formatLabel(arena, "song.imf"));
+    try std.testing.expectEqualStrings("WLF", formatLabel(arena, "a.wlf"));
+    try std.testing.expectEqualStrings("ADLIB", formatLabel(arena, "menu.adlib"));
     try std.testing.expectEqualStrings("TXT", formatLabel(arena, "stray.txt"));
     try std.testing.expectEqualStrings("?", formatLabel(arena, "noext"));
 }

@@ -47,7 +47,8 @@ All multi-byte integers are little-endian.
 | 0x24 | 1 or 2 | Instrument count (1 byte in v1.0, 2 bytes in v1.1) |
 | 0x25/0x26 | 0 or 2 | Tempo (v1.1 only, not used for playback rate) |
 
-Tag offsets that land at or past the instrument block are treated as zero.
+Title and composer offsets that land at or past the instrument block are
+treated as zero. Remarks are never read.
 
 ### Instruments
 
@@ -92,8 +93,8 @@ classes:
 | Controller | Meaning |
 |-----------:|---------|
 | `0x63` | AM + VIB depth bits in register `0xBD` |
-| `0x67` | Rhythm mode on/off (full melodic re-init) |
-| `0x68` | Transpose up (1/128 semitone units) |
+| `0x67` | Rhythm mode on/off (key off, then full melodic re-init) |
+| `0x68` | Transpose up (1/256 semitone per unit) |
 | `0x69` | Transpose down |
 
 MIDI channels 11..15 are Creative rhythm channels when rhythm mode is on.
@@ -106,7 +107,10 @@ files are detected at load time and remapped onto channels 11..15.
 2. Dup the music block and optional title/composer strings.
 3. Initialise nine melodic voices with Creative's default instrument, enable
    waveforms (`0x01` = `0x20`), and set AM+VIB depth (`0xBD` = `0xC0`).
-4. Each `step` drains zero-delay events, then waits the next VLQ delay.
+4. Each `step` drains zero-delay events, then waits the next VLQ delay. A
+   single call caps that drain at 256 events and returns `frames = 0` if the
+   next delay is still zero, so a hostile chain of zero-delay MIDI events
+   cannot stall the audio thread or freeze the duration probe at load.
 
 Voice allocation matches the Creative driver tiers: reuse a released voice on
 the same MIDI channel, then never-used, then any released, then steal the
@@ -131,7 +135,9 @@ frames = rescale(D, ticks_per_second, sample_rate)
 CMF always uses OPL2 and the stream visualizer. End of track rewinds the music
 pointer, silences every voice, restores the load-time rhythm mode, and clears
 patches, pitch bend, and transpose before reporting a song boundary, so a loop
-pass starts from the same state as the first.
+pass starts from the same state as the first. The file's opening delay is
+kept, including a zero delay. A mid-song rhythm toggle (`0x67`) keys off
+hanging notes before the melodic re-init.
 
 ## Metadata
 

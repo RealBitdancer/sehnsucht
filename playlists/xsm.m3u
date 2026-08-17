@@ -1,0 +1,12 @@
+#EXTM3U
+#PLAYLIST:eXtra Simple Music
+# Remote XSM set from Modland. Davey W. Taylor FMLIB demos (ofTAZ!).
+
+#EXTINF:-1,Child1
+https://modland.com/pub/modules/Ad%20Lib/Extra%20Simple%20Music/-%20unknown/child1.xsm
+#EXTINF:-1,Easy1
+https://modland.com/pub/modules/Ad%20Lib/Extra%20Simple%20Music/-%20unknown/easy1.xsm
+#EXTINF:-1,Fantasy1
+https://modland.com/pub/modules/Ad%20Lib/Extra%20Simple%20Music/-%20unknown/fantasy1.xsm
+#EXTINF:-1,Jungle1
+https://modland.com/pub/modules/Ad%20Lib/Extra%20Simple%20Music/-%20unknown/jungle1.xsm

@@ -13,9 +13,9 @@ These are the normal way to extend sehnsucht. New formats, visualizers, and
 themes are expected and encouraged.
 
 They share one compile-time model: an interface module, one implementation
-file, a row in `src/registry.zig`, a listing in `src/tests.zig`, and registry
-checks. Scaffolding lives in the `template.zig` file of each plugin directory
-and is kept compiling by the test root so it cannot rot unused.
+file, a row in `src/registry.zig`, and registry checks. Scaffolding lives in
+the `template.zig` file of each plugin directory. Each template has a test
+and is listed in `src/tests.zig` so it cannot rot unused.
 
 | Kind | Start here |
 |------|------------|

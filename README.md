@@ -8,31 +8,29 @@ A terminal player for classic **OPL2/OPL3** game music.
 
 ## What it does
 
-`sehnsucht` plays OPL music files in a terminal UI.
-
 A single file loops until you quit. A track with no native loop point plays
-once, pauses at the end, and Space replays it. An M3U playlist advances at
-each song end and stops after the last track unless loop (**L**) is on.
-Shuffle (**S**) randomizes the order.
+once, parks at the end, and Space replays it. A multi-entry playlist with
+loop off parks on the last track the same way.
 
 FM synthesis is [opal](https://github.com/RealBitdancer/opal) via
 [opal-zig](https://github.com/RealBitdancer/opal-zig). Audio out is
 [zaudio](https://github.com/zig-gamedev/zaudio) (miniaudio). The TUI is
 [libvaxis](https://github.com/rockorager/libvaxis).
 
-Every meter and spectrum band comes from real chip or PCM state. Nothing is
-fake visual filler.
-
+Every meter and spectrum band comes from real chip or PCM state.
 
 **Stream visualizer** (DRO, VGM, IMF, and the other stream formats): full-pane
 spectrum, info strip, and master meters.
 
 ![Stream visualizer](doc/img/stream.png)
 
-**Tracker visualizer** (HSC and RAD): pattern, order list, instruments, and
+**Tracker visualizer** (HSC, RAD, and LDS): pattern, order list, instruments, and
 OPL channel meters.
 
 ![Tracker visualizer](doc/img/tracker.png)
+
+Themes are Midnight Azure (default), LCD Ink, and High Contrast. T in the
+menu opens the theme browser.
 
 ## Why it exists
 
@@ -40,10 +38,6 @@ I built sehnsucht to put [opal](https://github.com/RealBitdancer/opal) through
 a real workload. The `examples/player` that ships with opal works, but it is
 too small to show what the core can do. A full terminal player was the better
 test.
-
-The project grew past that. Formats, playlists, remote loads, visualizers, and
-themes kept getting added. At some point I had to stop and release 0.1.0
-instead of shipping nothing while features piled up.
 
 The name sehnsucht is deliberate. It reminds me of the Amiga and DOS years,
 when the gaming and demo scenes produced impressive work and games still
@@ -66,23 +60,24 @@ is there for that. Contributions of the same kind are welcome (see
 |--------|--------------------|------------|--------|
 | HSC-Tracker | `.hsc` | tracker | OPL2, fixed 18.2 Hz tick |
 | RAD | `.rad` | tracker | Reality Adlib Tracker v1.0 / v2.1 |
+| LDS | `.lds`, `.ld0` | tracker | Loudness Sound System (OPL2). Tyrian and other mid-90s DOS games |
 | VGM / VGZ | `.vgm`, `.vgz` | stream | OPL-family chips only, GD3 metadata |
 | DRO | `.dro` | stream | DOSBox Raw OPL (v1 / early header / v2) |
 | RAW | `.raw` | stream | Rdos / RAC raw OPL capture (`RAWADATA`) |
+| BAM | `.bam` | stream | Bob's Adlib Music (`CBMF`). Uncompressed OPL2 events at 25 Hz |
+| XSM | `.xsm` | stream | eXtra Simple Music (`ofTAZ!`). Nine OPL2 channels, one instrument each, 5 Hz |
 | CMF | `.cmf` | stream | Creative Music File (Sound Blaster) |
 | IMF | `.imf`, `.adlib` | stream | Default 560 Hz. Override with `--rate` or R. Modland `ADLIB` metadata wrapper supported |
 | WLF | `.wlf` | stream | Default 700 Hz. Override with `--rate` or R |
 | AudioT | `AUDIOT.*` / `AUDIO.*` / `AUDIOHED.*` | stream | Muse archives, including Huffman-compressed `AUDIO.*` with an `AUDIODCT.*` dictionary (Keen 4-6). Music chunks are IMF and rate-adjustable like IMF |
 
-Non-OPL VGMs are rejected with a clear message. IMF and WLF do not store a tick
-rate in the file. The three rates used by Apogee and id games are **280**,
-**560**, and **700** Hz. DRO is a millisecond register capture (including
+Non-OPL VGMs are rejected. DRO is a millisecond register capture (including
 output from [vgz2dro](https://github.com/RealBitdancer/vgz2dro)).
 
-Per-format layout and quirks: [doc/formats/](doc/formats/).
+Per-format layout: [doc/formats/](doc/formats/).
 Adding a format: [doc/adding-a-format.md](doc/adding-a-format.md).
-Plugin model: [doc/plugins.md](doc/plugins.md).
-Hotkey and playlist-mode conventions:
+Plugins: [doc/plugins.md](doc/plugins.md).
+Hotkeys and playlist modes:
 [doc/hotkeys-and-playlist-modes.md](doc/hotkeys-and-playlist-modes.md).
 
 ## Playlists
@@ -91,56 +86,41 @@ Pass an `.m3u` or `.m3u8` file instead of a single track. One path per line.
 `#` starts a comment. Relative paths resolve against the playlist's location.
 Unsupported extensions are dropped.
 
-`#EXTINF` titles name the rows. `#PLAYLIST` names the list on the Playlist
-view title line. Without that directive, the playlist file name is used.
+`#EXTINF` titles name the rows. An `#EXTINF` tag may also carry `rate=280`,
+`rate=560`, or `rate=700` for IMF, WLF, and AudioT. That per-entry rate
+wins over the extension default and loses to `--rate`. `#PLAYLIST` names
+the list on the Playlist view title line. Without that directive, the
+playlist file name is used.
 
-Tracks play in order and advance at each song end. With loop (**L**) off, the
-list plays through once and stops. With loop on, it wraps at both ends.
-Shuffle (**S**) builds a random order with no repeats until the list is
-exhausted. **]** and **[** skip forward and back.
+Tracks play in order and advance at each song end. Loop (**L**) wraps at
+both ends. Off, the list plays through once and parks on the last track.
+Space replays that last song. Shuffle (**S**) builds a random order with
+no repeats until the list is exhausted. **]** and **[** skip.
 
-In the Playlist view, numbers for tracks already played this session dim, so
-you can see shuffle coverage without counting. Failed loads get a red ✗ and
-are skipped afterward. A short status-row message names the entry and the
-reason. Enter on a marked row retries it. Once the player is running, a load
-failure never quits the session.
-
-```sh
-zig build run -- playlists/modland.m3u
-```
+Played rows this session dim. Failed loads get a red ✗ and are skipped.
+Enter on a marked row retries it. A load failure never quits a running
+session.
 
 ## Remote files
 
-Any file or playlist argument, and any playlist entry, may be an `http://` or
-`https://` URL. The bytes download fully into memory (16 MiB cap, redirects
-followed, stalls abandoned after 30 seconds without progress), then play like
-a local file.
+Any file, playlist, or playlist entry may be an `http://` or `https://` URL.
+The bytes download into memory (16 MiB cap, redirects followed) and play like
+a local file. A stall with no bytes for 30 seconds is abandoned. A slow
+server that keeps delivering is not.
 
 Relative entries in a remote playlist resolve against the playlist URL.
-Spaces and similar characters are percent-encoded as needed. Schemes the
-player cannot fetch (`ftp://` and the rest) are dropped from playlists and
-rejected on the command line. A playlist fetched over http(s) keeps only
-http(s) entries, so a remote list cannot point at local files or UNC shares.
+Unsupported schemes are dropped. A playlist fetched over http(s) keeps only
+http(s) entries.
 
-Percent-encoded names show decoded in the header and the playlist view
-(`dune%201.dro` as `dune 1.dro`). Fetching always uses the URL as written.
+Percent-encoded names show decoded (`dune%201.dro` as `dune 1.dro`). Fetching
+uses the URL as written.
 
-`file://` is a spelling of a local path, not a download. It is percent-decoded
-and unwrapped before use, including drive forms (`file:///C:/...`,
-`file://C:/...`) and UNC (`file://host/share`). It may name a music file, a
-playlist, or a directory to browse.
+`file://` is a local path, not a download. Drive forms (`file:///C:/...`)
+and UNC (`file://host/share`) unwrap the same way.
 
-```sh
-zig build run -- "https://modland.com/pub/modules/Ad%20Lib/DOSBox/-%20unknown/dune1.dro"
-```
-
-Downloads run in the background. While bytes are in flight the status icon is
-a spinner, the header reads `[Loading]`, and every key still works. The audio
-device stops for the switch, so a slow server delays the next track but does
-not glitch the current one. Pressing skip again passes over a slow entry. A
-stalled server gives up after 30 seconds without delivering a byte, while a
-slow one may take as long as it keeps delivering. Starting with a URL opens
-the UI at once and fetches behind the spinner.
+Downloads run in the background. The header reads `[Loading]`, keys still
+work, and skip passes over a slow entry. Starting with a URL opens the UI at
+once.
 
 ## Building
 
@@ -151,8 +131,8 @@ zig build                 # -> zig-out/bin/sehnsucht[.exe]
 zig build test            # run unit tests
 ```
 
-Default optimize mode is **ReleaseSafe**. Dependencies (opal-zig, libvaxis,
-zaudio) are fetched by the package manager on first build.
+Default optimize mode is **ReleaseSafe**. Dependencies are fetched on first
+build.
 
 The UI is truecolor only (24-bit SGR). There is no 256-color or 16-color
 fallback. On a console without truecolor (Apple's Terminal.app is the usual
@@ -162,22 +142,33 @@ most Linux terminals).
 
 ## Sample playlists
 
-There is no sample audio in the tree. That keeps redistribution and copyright
-out of the repository. Curated remote lists under `playlists/` stream OPL
-music over https from Modland's Ad Lib tree and the
-[OPL Archive](https://opl.wafflenet.com/). You need network access to play them.
-
-| Path | What |
-|------|------|
-| `playlists/modland.m3u` | Format showcase with `#PLAYLIST` / `#EXTINF`: HSC, DRO, IMF, ADLIB, VGZ, CMF, RAW, and RAD |
-| `playlists/bitdance.m3u` | 50 tracks: Apogee/id IMF with `#EXTINF` `rate=` (280 / 560 / 700), Dune DRO, HSC, and OPL Archive VGZ covers |
+There is no sample audio in the tree. Remote lists under `playlists/` stream
+from Modland, the [OPL Archive](https://opl.wafflenet.com/), and the Internet
+Archive. They need network access.
 
 ```sh
-zig build run -- playlists/modland.m3u
 zig build run -- playlists/bitdance.m3u
 ```
 
-Local files and directories work the same way as these lists.
+| Path | What |
+|------|------|
+| `playlists/bitdance.m3u` | 52 mixed IMF, DRO, HSC, LDS, and VGZ tracks |
+| `playlists/hsc.m3u` | 234 HSC modules (mostly Hannes Seifert) |
+| `playlists/rad.m3u` | 127 RAD modules |
+| `playlists/lds.m3u` | 185 tracks (184 Modland `.lds` plus AdPlug `GENORI.LD0`) |
+| `playlists/vgm.m3u` | 1341 OPL-family VGZ dumps |
+| `playlists/dro.m3u` | 2 DRO captures |
+| `playlists/raw.m3u` | 316 RAW captures |
+| `playlists/bam.m3u` | 29 BAM tracks |
+| `playlists/xsm.m3u` | 4 XSM demos (the known corpus) |
+| `playlists/cmf.m3u` | 443 CMF songs |
+| `playlists/imf.m3u` | 240 IMF and ADLIB tracks |
+| `playlists/wlf.m3u` | 27 Wolfenstein 3D WLF rips (`jpb1991`) |
+| `playlists/audiot.m3u` | 3 Muse archives (Wolf3D, Blake Stone shareware, Spear of Destiny demo) |
+
+Keen AudioT on Archive.org is only the compressed `AUDIO.CK4` lump. The header
+and Huffman dictionary stay inside the EXE, so that set is not playable
+remotely.
 
 ## Usage
 
@@ -187,7 +178,6 @@ sehnsucht                       # Browse view in the current directory
 sehnsucht ~/adlib               # Browse view in the given directory
 sehnsucht favorites.m3u         # Playlist view, plays the first entry
 sehnsucht a.hsc b.vgm c.dro     # several files become a playlist
-sehnsucht ~/adlib/*.hsc         # same, expanded by a Unix shell
 sehnsucht https://example.com/tune.vgz
 sehnsucht --rate 700 tune.imf
 sehnsucht --track 2 AUDIOT.WL6
@@ -198,16 +188,6 @@ sehnsucht --help              # -h works too
 A playlist or directory must be the only argument. Wildcards are the shell's
 job, so cmd.exe users must list files explicitly.
 
-```sh
-# via the build system (needs network for the sample lists)
-zig build run -- playlists/modland.m3u
-zig build run -- playlists/bitdance.m3u
-
-# or the built binary
-zig-out/bin/sehnsucht song.vgz
-zig-out/bin/sehnsucht "https://modland.com/pub/modules/Ad%20Lib/DOSBox/-%20unknown/dune1.dro"
-```
-
 ### In-player keys
 
 Transport keys are the ones the status frame shows. They work from every view
@@ -215,15 +195,15 @@ and every focus state. Nothing else in the player binds them.
 
 | Key | Action |
 |-----|--------|
-| Space | Pause / resume |
+| Space | Pause / resume. Replays a parked one-shot or the last song of a finished playlist pass |
 | + / - | Volume up / down, 2.4 dB per press (`=` is also `+`) |
 | M | Mute / unmute |
-| R | Cycle IMF/WLF/AudioT tick rate 280 → 560 → 700 (rate-adjustable sources only) |
+| R | Cycle IMF/WLF/AudioT tick rate 280 → 560 → 700 (rate-adjustable sources only). Replay and archive steps keep the choice |
 | `,` / `.` | Previous / next music track in an AudioT archive (multi-track only) |
 | `]` | Next track (playlists only) |
 | `[` | Previous track (playlists only) |
-| S | Toggle shuffle (multi-entry playlists, Fisher-Yates, no repeats until exhausted) |
-| L | Toggle playlist loop. Off plays through once and stops. On wraps at the ends (a finished shuffle pass reshuffles and continues) |
+| S | Toggle shuffle (playlists) |
+| L | Toggle playlist loop |
 
 Everything else is shell navigation.
 
@@ -248,33 +228,6 @@ Everything else is shell navigation.
 Where the terminal reports mouse events, click a menu item to open it, click a
 list row to select it, click the selected row again to open or play it, and
 scroll lists with the wheel.
-
-## Visualizers
-
-Formats pick a named visualizer. The shell is three framed regions with rounded
-corners.
-
-- **Header:** brand, menu (`Browse` / `Playlist` / `Visualize` / `Theme` /
-  `Quit`), and two title rows with playback state, track metadata, time, and
-  volume. Each menu item's emphasized letter is its accelerator. Mode lights
-  sit under the volume readout (`↻` loop and `⤨` shuffle on multi-entry
-  playlists, `⊘` mute always): amber when on, dim when off.
-- **Middle:** visualizer, file browser, playlist, or theme browser. The theme
-  browser lists each theme's display name and description, including High
-  Contrast for low-vision use.
-- **Status frame:** seek bar, duration, and a transport key row underneath.
-  Chips that cannot act are dimmed. Toggles show the next action. Space is
-  U+23B5 (⎵). Contextual chips appear only when useful (`R rate`, `, . track`,
-  playlist loop/shuffle/prev/next). Menu letters are not repeated on the key
-  row.
-
-Browse and Playlist panes each end with a navigation key bar when there is
-room for it.
-
-| Name | Used by | Presentation |
-|------|---------|--------------|
-| `tracker` | HSC, RAD | Pattern, order, instruments, OPL channel meters |
-| `stream` | VGM/VGZ, DRO, RAW, CMF, IMF/WLF, AudioT | Full-pane PCM analyzer with an info strip (song loop badge, tick rate, source system, peak meter) and a bottom master row (L/R channel meters, running loudness graph) |
 
 ## License
 

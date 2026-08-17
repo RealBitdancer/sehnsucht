@@ -280,7 +280,7 @@ pub fn printStderr(io: Io, comptime fmt: []const u8, args: anytype) void {
     w.interface.flush() catch std.process.exit(1);
 }
 
-const usage_text = "usage: " ++ build_options.name ++ " [options] [files... | playlist | directory]\n" ++
+const usage_text = "usage: " ++ build_options.name ++ " [options] [files... | playlist | directory | URL]\n" ++
     \\
     \\A music file plays in its visualizer. Several music files
     \\become a playlist and open the Playlist view. A playlist
@@ -290,7 +290,7 @@ const usage_text = "usage: " ++ build_options.name ++ " [options] [files... | pl
     \\playlist or directory must be the only argument. Wildcards
     \\are expanded by the shell, not the player.
     \\
-    \\formats: .hsc .rad .vgm .vgz .dro .raw .cmf .imf .wlf .adlib
+    \\formats: .hsc .rad .lds .ld0 .vgm .vgz .dro .raw .bam .xsm .cmf .imf .wlf .adlib
     \\         AUDIOT.* / AUDIO.* / AUDIOHED.* (id Muse archives)
     \\         .m3u / .m3u8 playlists of the above
     \\

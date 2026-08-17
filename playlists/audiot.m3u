@@ -1,0 +1,11 @@
+#EXTM3U
+#PLAYLIST:AudioT
+# Remote Muse archives from the Internet Archive.
+# Each entry is AUDIOT. The matching AUDIOHED is fetched from the same zip URL.
+
+#EXTINF:-1 rate=700,Wolfenstein 3D
+https://archive.org/download/jpb1991/wolf3dendgamedos.zip/wolf3dendgamedos/AUDIOT.WL6
+#EXTINF:-1 rate=700,Blake Stone - Aliens of Gold (shareware)
+https://archive.org/download/BlakeStoneAliensOfGold/BSTONE.ZIP/AUDIOT.BS1
+#EXTINF:-1 rate=700,Spear of Destiny (demo)
+https://archive.org/download/jpb1991/soddemosdl.zip/soddemosdl/AUDIOT.SDM

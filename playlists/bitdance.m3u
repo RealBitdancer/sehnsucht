@@ -1,6 +1,6 @@
 #EXTM3U
 #PLAYLIST:Bitdance
-# Retro game OPL set from Modland (IMF/DRO/HSC) and the OPL Archive (VGZ covers).
+# Retro game OPL set from Modland (IMF/DRO/HSC/LDS) and the OPL Archive (VGZ covers).
 # IMF #EXTINF rate= tags use the original game tick rates (VGMPF):
 #   560 Hz  Bio Menace, Commander Keen, Monster Bash, Catacomb 3-D
 #   700 Hz  Cosmo's Cosmic Adventure, Wolfenstein 3D, Spear of Destiny, Blake Stone
@@ -72,6 +72,10 @@ https://opl.wafflenet.com/vgm/%24pleen/Hi-Fly.vgz
 https://modland.com/pub/modules/Ad%20Lib/HSC%20AdLib%20Composer/Hannes%20Seifert/Burntime/intro%20-%20titlemusic.hsc
 #EXTINF:-1,neo title remix
 https://modland.com/pub/modules/Ad%20Lib/HSC%20AdLib%20Composer/Hannes%20Seifert/neo%20title%20remix.hsc
+#EXTINF:-1,Tyrian - One Mustn't Fall
+https://modland.com/pub/modules/Ad%20Lib/Loudness%20Sound%20System/Andreas%20Molnar/tyrian35%20-%20one%20mustn%27t%20fall.lds
+#EXTINF:-1,Tyrian - Sahra's Song
+https://modland.com/pub/modules/Ad%20Lib/Loudness%20Sound%20System/Andreas%20Molnar/tyrian36%20-%20sahra%27s%20song.lds
 #EXTINF:-1,Attack the Enemy's Heart
 https://opl.wafflenet.com/vgm/Ahn1979/Attack%20the%20Enemy's%20Heart.vgz
 #EXTINF:-1,Final Fantasy V - Clash on the Big Bridge

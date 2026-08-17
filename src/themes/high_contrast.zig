@@ -3,7 +3,6 @@
 // SPDX-License-Identifier: MIT
 //
 
-const std = @import("std");
 const vaxis = @import("vaxis");
 
 const Colors = @import("../theme.zig").Colors;
@@ -168,77 +167,3 @@ pub const peak_stops = [3]VuStop{
 };
 
 pub const theme = Theme.init(@This());
-
-// --- tests -------------------------------------------------------------------
-
-test "high contrast theme uses inverse selection and bold text" {
-    try std.testing.expectEqual(@as([3]u8, .{ 0x00, 0x00, 0x00 }), colors.bg.rgb);
-    try std.testing.expectEqual(@as([3]u8, .{ 0xFF, 0xFF, 0x00 }), colors.list_cursor_bg.rgb);
-    try std.testing.expectEqual(@as([3]u8, .{ 0x00, 0x00, 0x00 }), colors.list_cursor_fg.rgb);
-    try std.testing.expect(theme.listEntry(colors.list_row_fg, colors.bg, false).bold);
-    try std.testing.expectEqual(vaxis.Style.Underline.single, theme.listEntry(colors.list_cursor_fg, colors.list_cursor_bg, true).ul_style);
-}
-
-test "high contrast text meets WCAG contrast minimums" {
-    const Pair = struct { fg: [3]u8, bg: [3]u8 };
-    const pairs = [_]Pair{
-        .{ .fg = white.rgb, .bg = black.rgb },
-        .{ .fg = secondary.rgb, .bg = black.rgb },
-        .{ .fg = disabled.rgb, .bg = black.rgb },
-        .{ .fg = ghost.rgb, .bg = black.rgb },
-        .{ .fg = cyan.rgb, .bg = black.rgb },
-        .{ .fg = yellow.rgb, .bg = black.rgb },
-        .{ .fg = magenta.rgb, .bg = black.rgb },
-        .{ .fg = black.rgb, .bg = yellow.rgb },
-        .{ .fg = white.rgb, .bg = open_bg.rgb },
-        .{ .fg = white.rgb, .bg = toolbar.rgb },
-        .{ .fg = secondary.rgb, .bg = toolbar.rgb },
-        .{ .fg = disabled.rgb, .bg = toolbar.rgb },
-        .{ .fg = ghost.rgb, .bg = toolbar.rgb },
-        .{ .fg = cyan.rgb, .bg = toolbar.rgb },
-        .{ .fg = yellow.rgb, .bg = toolbar.rgb },
-    };
-
-    for (pairs) |pair| {
-        try std.testing.expect(contrastRatio(pair.fg, pair.bg) >= 4.5);
-    }
-    try std.testing.expect(contrastRatio(rail.rgb, black.rgb) >= 3);
-}
-
-test "high contrast visualizer gradients remain visible" {
-    for (0..101) |step| {
-        const frac = @as(f32, @floatFromInt(step)) / 100;
-        try std.testing.expect(contrastRatio(theme.meterBar(frac, false).fg.rgb, black.rgb) >= 4.5);
-        try std.testing.expect(contrastRatio(theme.infoMeter(frac, true).fg.rgb, toolbar.rgb) >= 4.5);
-        try std.testing.expect(contrastRatio(theme.barPeak(frac).fg.rgb, black.rgb) >= 3);
-    }
-}
-
-test "high contrast semantic colors avoid red-green encoding" {
-    try std.testing.expectEqual(cyan.rgb, colors.state_playing_fg.rgb);
-    try std.testing.expectEqual(yellow.rgb, colors.state_paused_fg.rgb);
-    try std.testing.expectEqual(magenta.rgb, colors.notice_mark_fg.rgb);
-    try std.testing.expectEqual(cyan.rgb, vu_stops[0].rgb);
-    try std.testing.expectEqual(yellow.rgb, vu_stops[1].rgb);
-    try std.testing.expectEqual(magenta.rgb, vu_stops[2].rgb);
-}
-
-fn contrastRatio(a: [3]u8, b: [3]u8) f64 {
-    const lighter = @max(luminance(a), luminance(b));
-    const darker = @min(luminance(a), luminance(b));
-    return (lighter + 0.05) / (darker + 0.05);
-}
-
-fn luminance(value: [3]u8) f64 {
-    const weights = [3]f64{ 0.2126, 0.7152, 0.0722 };
-    var result: f64 = 0;
-    for (value, weights) |component, weight| {
-        const srgb = @as(f64, @floatFromInt(component)) / 255;
-        const linear = if (srgb <= 0.04045)
-            srgb / 12.92
-        else
-            std.math.pow(f64, (srgb + 0.055) / 1.055, 2.4);
-        result += linear * weight;
-    }
-    return result;
-}

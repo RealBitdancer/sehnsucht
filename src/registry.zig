@@ -17,8 +17,11 @@ const format_modules = .{
     @import("formats/dro.zig"),
     @import("formats/vgm.zig"),
     @import("formats/raw.zig"),
+    @import("formats/bam.zig"),
+    @import("formats/xsm.zig"),
     @import("formats/cmf.zig"),
     @import("formats/rad.zig"),
+    @import("formats/lds.zig"),
     @import("formats/audiot.zig"),
     @import("formats/hsc.zig"),
     @import("formats/imf.zig"),
@@ -50,6 +53,7 @@ pub const visualizers = [_]visualizer.Visualizer{
 
 pub const themes = [_]theme.Theme{
     @import("themes/midnight_azure.zig").theme,
+    @import("themes/lcd_ink.zig").theme,
     @import("themes/high_contrast.zig").theme,
 };
 

@@ -8,12 +8,17 @@ Formats share the registry and template principles described in
 The current playback interface supports OPL2 and OPL3. A format that produces
 PCM or targets another chip needs a playback interface change first.
 
+OPL3 NEW (register `0x105` bit 0) is a live mode bit. Bank 1, waveforms 4-7,
+CHA/CHB, and four-operator pairing apply only while it is set. Enabling NEW
+clears C0, so write C0 after that enable or the chip stays silent. Dual-chip
+stream decoders enable NEW at load (`chip.enableNew`) and OR CHA/CHB onto C0
+writes (`chip.withStereoC0`).
+
 ## Files to add or update
 
 1. Copy `src/formats/template.zig` to `src/formats/<name>.zig`.
 2. Add the module to `format_modules` in `src/registry.zig`. The registered
-   `formats` array is built from that list, so the module is the only place
-   the new format has to be named.
+   `formats` array is built from that list.
 3. Copy `doc/formats/template.md` to `doc/formats/<name>.md`.
 4. Add the format to `doc/formats/README.md`.
 
@@ -47,8 +52,9 @@ pub const format = fmt.Format{
 `matches_path` when an extension is insufficient. `sibling_path` requests a
 companion file, `sibling_alt_path` a fallback fetched when the primary read
 fails, and `sibling2_path` a second companion for formats that need two
-(AudioT's dictionary). `label_for_path` changes the label shown before
-loading.
+(AudioT's dictionary). `label_for_path` sets the playlist label when one
+decoder owns more than one name (`WLF`, `ADLIB`, `VGZ`, `LD0`). Use the same
+spelling in `TrackInfo.format_name`.
 
 The registered visualizer is part of validation. Use `visualizer_name` in both
 the format declaration and `TrackInfo`, which the build enforces, because the

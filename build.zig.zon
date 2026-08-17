@@ -1,13 +1,13 @@
 .{
     .name = .sehnsucht,
     .brand = "SEHNSUCHT",
-    .version = "0.1.1",
+    .version = "0.2.0",
     .fingerprint = 0x6fc5c28bf1e09276, // Changing this has security and trust implications.
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .opal = .{
-            .url = "git+https://github.com/RealBitdancer/opal-zig?ref=v2.0.1-1#729ca5819675ac4d0210ccd04a6187e8a0439786",
-            .hash = "opal-2.0.1-1--ITPC2SaAACfR7EpZSOMCMZDrI5KIwPqpZ4Ocmtv_TOb",
+            .url = "git+https://github.com/RealBitdancer/opal-zig?ref=v2.0.2-1#91d4d8e93b5a0e75f3708ce49720535277556444",
+            .hash = "opal-2.0.2-1--ITPCxu5AAA4GZk7qydaDtvwkkp4O0Sjgf8WYedB6Hdy",
         },
         .vaxis = .{
             .url = "git+https://github.com/rockorager/libvaxis#d63a23c593c9b82f0b2886840161fa1f1df983e9",

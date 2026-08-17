@@ -1,0 +1,8 @@
+#EXTM3U
+#PLAYLIST:DOSBox Raw OPL
+# Remote DRO set from Modland. DOSBox Raw OPL captures.
+
+#EXTINF:-1,Dune1
+https://modland.com/pub/modules/Ad%20Lib/DOSBox/-%20unknown/dune1.dro
+#EXTINF:-1,Samurai
+https://modland.com/pub/modules/Ad%20Lib/DOSBox/-%20unknown/samurai.dro

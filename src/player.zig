@@ -18,6 +18,16 @@ pub const Loaded = struct {
     system: []const u8,
 };
 
+fn chipLabel(track: format.TrackInfo) []const u8 {
+    if (track.system) |s| {
+        if (std.mem.eql(u8, s, "Dual OPL2") or
+            std.mem.eql(u8, s, "OPL3") or
+            std.mem.eql(u8, s, "OPL2"))
+            return s;
+    }
+    return if (track.opl3) "OPL3" else "OPL2";
+}
+
 pub fn assembleTrack(
     gpa: std.mem.Allocator,
     engine: *AudioEngine,
@@ -39,7 +49,7 @@ pub fn assembleTrack(
         .track = track,
         .view = view,
         .display_name = track.title orelse format.basenameOf(path),
-        .system = if (track.opl3) "OPL3" else "OPL2",
+        .system = chipLabel(track),
     };
 }
 
@@ -152,6 +162,7 @@ pub const Player = struct {
     shuffle: bool = false,
     loop_all: bool = false,
     tick_rate_hz: u32,
+    live_rate_hz: u32 = 0,
     track_index: u32,
     src: ?format.MusicSource,
     detached_path: ?[]u8 = null,
@@ -222,6 +233,7 @@ pub const Player = struct {
     }
 
     pub fn rateForIndex(self: *const Player, idx: usize) u32 {
+        if (self.live_rate_hz != 0) return self.live_rate_hz;
         if (self.tick_rate_hz != 0) return self.tick_rate_hz;
         if (idx < self.rates.len and self.rates[idx] != 0) return self.rates[idx];
         return 0;
@@ -558,6 +570,25 @@ fn replaceEntriesOomBody(gpa: std.mem.Allocator, io: Io) !void {
         try std.testing.expectEqual(@as(usize, 2), p.unplayable.len);
         return err;
     }
+}
+
+test "chip label keeps Dual OPL2 and ignores GD3 system names" {
+    try std.testing.expectEqualStrings("Dual OPL2", chipLabel(.{
+        .format_name = "DRO2",
+        .visualizer = "stream",
+        .system = "Dual OPL2",
+    }));
+    try std.testing.expectEqualStrings("OPL2", chipLabel(.{
+        .format_name = "VGM",
+        .visualizer = "stream",
+        .system = "MSX",
+    }));
+    try std.testing.expectEqualStrings("OPL3", chipLabel(.{
+        .format_name = "VGM",
+        .visualizer = "stream",
+        .opl3 = true,
+        .system = "IBM PC",
+    }));
 }
 
 test "replaceEntries keeps the old list intact on allocation failure" {

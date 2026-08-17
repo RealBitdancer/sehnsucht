@@ -53,7 +53,8 @@ Each record is two bytes:
 
 A delay of zero never occurs in real captures, and the format specification
 does not define it. Playing it as 256 ticks is this player's defensive choice.
-AdPlug's delay counter underflows instead and waits 65536 ticks.
+AdPlug uses an 8-bit delay counter. A stored zero underflows to 255, and
+together with the update that consumed the record that is also 256 ticks.
 
 ### Optional tags
 
@@ -78,6 +79,12 @@ the title. Tag bytes are never played.
 3. For each record, apply the control table above.
 4. Register writes use bank base `0` or `0x100` for the second chip.
 
+`step` batches register writes and control ops until the next delay (or end).
+A single call caps work at 4096 ops and returns `frames = 0` if it hits that
+limit without a delay, so a hostile stream of writes with the delay only at the
+end cannot stall the audio thread or the duration probe. The next `step`
+continues from the same cursor.
+
 ## Timing
 
 Refresh rate in hertz is:
@@ -98,8 +105,12 @@ with the shared fractional carry used by other stream formats.
 ## Playback
 
 RAW uses the stream visualizer and OPL2 (dual-chip captures set bank `0x100`).
-When the stream ends, the decoder rewinds to the first record and reports a
-song boundary (`done`).
+Load enables NEW so chip 2 is a real second bank. Writes to `C0`..`C8` get
+CHA/CHB (`0x30`).
+When the stream ends, the decoder rewinds the cursor and bank to the start
+and reports a song boundary (`done`). The current speed is kept. A capture
+that changed the divisor mid-stream therefore loops at the last speed, not
+the header clock.
 
 ## Metadata
 

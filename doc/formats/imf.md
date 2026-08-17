@@ -64,8 +64,9 @@ If the first little-endian `u16` is zero, the entire file is the command
 stream. There is no two-byte header to skip. Bytes 0 and 1 are the register and
 value of the first command.
 
-Many type-0 files begin with `00 00`. The resulting write to register zero is
-harmless on the original hardware.
+Under this rule every type-0 file begins with `00 00`, so the first command
+is a write of 0 to register 0. That write is harmless on the original
+hardware.
 
 #### Type 1
 
@@ -151,7 +152,11 @@ sehnsucht --rate 700 tune.imf
 sehnsucht --rate=280 tune.imf
 ```
 
-The **R** key cycles 280, 560, and 700 Hz while the track is playing.
+The **R** key cycles 280, 560, and 700 Hz while a rate-adjustable track is
+loaded, including while paused. Space replay and AudioT `,` / `.` keep the
+chosen rate. A playlist skip or Enter jump starts the next file at `--rate`
+or the path default. If you launched with `--rate`, R updates that session
+override instead.
 
 ### Frame conversion
 
@@ -182,8 +187,8 @@ without its extension. A valid `ADLIB` wrapper may supply a track title and a
 game name. A type-1 tag footer may supply a title and an author. Titles from
 either source are embedded metadata only when nonempty.
 
-The post-load format label is `WLF` when the extension is `.wlf` or the active
-rate is 700 Hz. It is `IMF` otherwise.
+Labels follow the path (`IMF`, `WLF`, `ADLIB`). A file loaded at 700 Hz is
+labelled `WLF`. Cycling the rate later does not change that label.
 
 ## Errors
 

@@ -2,6 +2,81 @@
 
 All notable changes to this project are documented here.
 
+## [0.2.0] - 2026-08-16
+
+### Added
+
+- LDS (Loudness Sound System, `.lds` / `.ld0`). Nine-channel OPL2 tracker with
+  packed pattern streams, native `0xF9` loops, and the tracker visualizer.
+  Remote playlist at `playlists/lds.m3u` (Modland `.lds` plus AdPlug
+  `GENORI.LD0`)
+- LCD Ink theme. Dark ink on a green-grey backplane
+- BAM (Bob's Adlib Music, `.bam`). Uncompressed OPL2 events with `CBMF` magic,
+  25 Hz waits, labels, finite loops, and one-level chorus. Remote playlist at
+  `playlists/bam.m3u`
+- XSM (eXtra Simple Music, `.xsm`). Nine-channel OPL2 note grid with `ofTAZ!`
+  magic, one SBI patch per channel, and a fixed 5 Hz tick. Remote playlist at
+  `playlists/xsm.m3u`
+- Remote per-format playlists for HSC, RAD, LDS, VGM/VGZ, DRO, RAW, BAM, XSM,
+  CMF, IMF/ADLIB, WLF, and AudioT (`playlists/hsc.m3u`, `rad.m3u`, `lds.m3u`,
+  `vgm.m3u`, `dro.m3u`, `raw.m3u`, `bam.m3u`, `xsm.m3u`, `cmf.m3u`, `imf.m3u`,
+  `wlf.m3u`, `audiot.m3u`)
+
+### Fixed
+
+- Playlist and header labels: `LD0`, `VGZ`, `ADLIB` (not the parent name)
+- HSC instrument-set keys off without writing `B0 = 0`, so release keeps the
+  stored block and F-number
+- After a track loops in place, the progress bar and elapsed time restart from the start of the song instead of climbing past duration
+- Hostile RAW streams that pack huge runs of register writes before any delay no longer stall a single `step` on the audio thread (work is capped per step and yields with zero frames)
+- Hostile CMF streams with long zero-delay MIDI event chains are capped the same way, so the audio thread yields and the load-time duration probe can hit its step caps
+- LDS patches whose arpeggio length exceeds the 12-entry table no longer abort playback
+- Dual OPL2 VGM, DRO, and RAW no longer fold the second chip onto the first.
+  Those captures enable NEW and set CHA/CHB on `C0` so bank 1 is a real
+  second chip
+- A failed last-track load no longer wraps to an earlier song when playlist
+  loop is off
+- Space on the last looping track of a finished pass reloads it, and a jump
+  or wrap-advance from that parked state starts the new track instead of
+  staying silent
+- Hostile VGM streams of `0x80` waits and data-block skips no longer stall
+  a single `step` (work is capped per step, like RAW and CMF)
+- CMF loops keep the file's leading delay, including zero, instead of
+  inserting one extra silent tick
+- The LDS tracker highlight stays on the sounding row instead of jumping
+  ahead on the same tick
+- An LDS loop jump on the same row as a stop continues at the jump
+  destination instead of rewinding to the start
+- A BAM song-loop no longer keeps a leftover chorus return
+- A mid-song CMF rhythm toggle keys off hanging notes
+- Dual OPL2 DRO files show Dual OPL2 in the header, not OPL2
+- Load-skip notices use plain phrases for bad VGM, DRO, and AudioT files
+  instead of Zig error names. A mid-download read failure says
+  "download interrupted", not `ReadFailed`
+- Extra `]` / `[` presses while a track is loading skip further down the
+  list instead of only one extra file
+- R keeps the chosen tick rate across replay and archive track steps. A
+  playlist skip or Enter jump starts the next file at its default (or
+  `--rate`)
+
+### Changed
+
+- OPL synthesis is opal 2.0.2 via opal-zig 2.0.2-1. NEW (register 105h bit 0)
+  is a live mode bit. Bank 1, waveforms 4-7, CHA/CHB, and four-operator pairing
+  apply only while it is set. NEW with C0 missing CHA/CHB is silent
+- Remote playlists are per-format. The mixed Modland showcase
+  (`playlists/modland.m3u`) is gone. Use `playlists/bitdance.m3u` for a mixed
+  sample, or a per-format list
+- Documentation: the format guide states the live NEW rule. Every OPL VGM,
+  Dual OPL2/OPL3 DRO, and dual-chip RAW enable NEW at load and set CHA/CHB on
+  C0. CMF, RAW, and VGM describe the per-step work cap
+- Documentation: format guides match the decoders (LDS tempo, wait units,
+  arpeggio clamp, tracker highlight, and F9+FC, RAD tail vs size-word, VGM GD3
+  OOM, CMF transpose and rhythm toggle, RAW AdPlug delay-0, BAM 8191 indices
+  and song-loop chorus, XSM AdPlug C0+op_table). README tracker caption
+  includes LDS. The hotkeys note covers parked Space replay,
+  skip-while-loading, and R keeping the tick rate
+
 ## [0.1.1] - 2026-08-11
 
 Bug-fix release, no new features.

@@ -437,6 +437,10 @@ const CmfSource = struct {
     }
 
     fn rhythmMode(self: *CmfSource, chip: fmt.Chip, enable: bool) void {
+        for (0..opl_channels) |i| {
+            const reg = Reg.key_block + @as(u16, @intCast(i));
+            self.write(chip, reg, self.regs[reg] & ~Reg.key_on);
+        }
         self.percussive = enable;
         self.write(chip, Reg.csw, 0);
         for (0..opl_channels) |i| {
@@ -601,24 +605,29 @@ const CmfSource = struct {
         return false;
     }
 
+    const max_events_per_step: u32 = 256;
+
     pub fn step(self: *CmfSource, chip: fmt.Chip) fmt.StepResult {
         if (self.delay_remaining == 0) {
             var done = false;
+            var events: u32 = 0;
             while (self.delay_remaining == 0) {
                 done = self.processEvent(chip) or done;
+                events += 1;
                 if (self.pos == 0 and done) {
                     // End of track: next delay is the leading VLQ after rewind.
                     self.resetLoopState(chip);
                     self.prev_command = 0;
                     self.delay_remaining = self.readVlq();
-                    if (self.delay_remaining == 0) self.delay_remaining = 1;
                     return .{ .frames = 0, .done = true };
                 }
                 self.delay_remaining = self.readVlq();
                 if (self.pos == 0 and self.delay_remaining == 0 and done) {
                     self.resetLoopState(chip);
-                    self.delay_remaining = 1;
                     return .{ .frames = 0, .done = true };
+                }
+                if (self.delay_remaining == 0 and events >= max_events_per_step) {
+                    return .{ .frames = 0 };
                 }
             }
         }
@@ -923,6 +932,52 @@ test "cmf truncated header is invalid" {
         .chip = fmt.noop_chip,
         .ext = ".cmf",
     }));
+}
+
+test "cmf step yields before a long zero-delay event chain" {
+    const gpa = std.testing.allocator;
+    const n: usize = CmfSource.max_events_per_step + 8;
+    var music = try gpa.alloc(u8, n * 4 + 4);
+    defer gpa.free(music);
+    var p: usize = 0;
+    var e: usize = 0;
+    while (e < n) : (e += 1) {
+        music[p] = 0x00;
+        music[p + 1] = 0x80;
+        music[p + 2] = 60;
+        music[p + 3] = 0;
+        p += 4;
+    }
+    music[p] = 0x01;
+    music[p + 1] = 0xff;
+    music[p + 2] = 0x2f;
+    music[p + 3] = 0x00;
+    p += 4;
+
+    var file_buf: [2048]u8 = undefined;
+    const data = makeMinimalCmf(&file_buf, music[0..p]);
+    const src = (try load(gpa, data, .{
+        .sample_rate = 44100,
+        .chip = fmt.noop_chip,
+        .ext = ".cmf",
+    })).?;
+    defer src.deinit(gpa);
+
+    const first = src.step(fmt.noop_chip);
+    try std.testing.expectEqual(@as(u64, 0), first.frames);
+    try std.testing.expect(!first.done);
+
+    var saw_wait = false;
+    var steps: u32 = 0;
+    while (steps < 8) : (steps += 1) {
+        const r = src.step(fmt.noop_chip);
+        if (r.frames > 0) {
+            saw_wait = true;
+            break;
+        }
+        try std.testing.expect(!r.done);
+    }
+    try std.testing.expect(saw_wait);
 }
 
 fn effectiveFreq(r: anytype) u32 {

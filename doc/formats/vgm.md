@@ -106,8 +106,9 @@ belong to the first chip, and folding a second chip onto them would let the two
 write streams fight over the same registers. The first chip plays correctly and
 the second stays silent.
 
-When a YMF262 clock is present, initialize OPL3 mode by writing `0x01` to
-register `0x105`.
+Every OPL VGM enables NEW (`0x105` = `1`) at load so a second OPL2 on
+bank 1 is a real second chip. Writes to `C0`..`C8` (either bank) get
+CHA/CHB set (`0x30`). Enabling NEW without those bits is silent.
 
 ### OPL register writes
 
@@ -134,7 +135,9 @@ Y8950 ADPCM data blocks are skipped. Only its FM register writes are played.
 
 Commands `0x80` through `0x8F` normally combine a YM2612 DAC write with a
 wait. sehnsucht ignores the DAC write but preserves the wait. `0x80` has no
-wait.
+wait. A single `step` caps skipped and zero-wait commands at 4096 and
+returns `frames = 0` so a long `0x80` or data-block run cannot stall the
+audio thread.
 
 ### Data transfer commands
 
@@ -215,13 +218,19 @@ Duration is:
 total_samples * output_rate / 44100
 ```
 
-The loop sample count does not affect this value.
+The loop sample count does not affect this value. A header total of 0 yields
+no native duration. The loader then probe-steps a second instance, as it
+does for other formats that omit `durationFrames`.
 
 ## Playback
 
 VGM uses the stream visualizer. Supported OPL writes are sent to one emulated
-device using the bank mapping above. End commands and valid loop points follow
-the rules under [End and loop handling](#end-and-loop-handling).
+device using the bank mapping above. Every OPL VGM enables NEW at load.
+Writes to `C0`..`C8` get CHA/CHB (`0x30`). A channel that never writes C0
+stays silent. End commands and valid loop points follow the rules under
+[End and loop handling](#end-and-loop-handling).
+
+Labels: `VGM` or `VGZ` from the path.
 
 ## Metadata
 
@@ -253,8 +262,9 @@ The body must fit in the file. The strings are:
 | 10 | Notes | No |
 
 Strings are converted to UTF-8. Valid surrogate pairs are combined. Invalid
-code units are skipped. A bad GD3 magic, range, or allocation does not prevent
-the music from loading.
+code units are skipped. A bad GD3 magic or range does not prevent the music
+from loading. An allocation failure while converting the strings fails the
+load (`error.OutOfMemory`).
 
 English GD3 title, game, system, and artist fields are shown when present. A
 GD3 title is embedded metadata.
@@ -268,6 +278,7 @@ GD3 title is embedded metadata.
 | `NonOplVgm` | No supported OPL clock appears before command data |
 | `GzipFailed` | Gzip stream is invalid |
 | `StreamTooLong` | Decompressed data exceeds 16 MiB |
+| `OutOfMemory` | Allocation failed (inflate or GD3 strings) |
 
 ## Compatibility notes
 

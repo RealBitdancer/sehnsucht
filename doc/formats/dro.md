@@ -204,12 +204,14 @@ Duration is the sum of decoded stream delays. The header duration is not used.
   edge so the engine loop counter advances. The player loops indefinitely.
 
 sehnsucht uses the stream visualizer and sends both register banks to one
-emulated OPL device.
+emulated OPL device. Dual OPL2 and OPL3 captures enable NEW at load.
+Writes to `C0`..`C8` get CHA/CHB (`0x30`) so bank 1 is audible.
 
 ## Metadata
 
 The format contains no text metadata. sehnsucht synthesizes a title such as
 `DRO v1 (OPL2)` or `DRO v2 (Dual OPL2)`. The title is not embedded metadata.
+The playlist column is `DRO`. After load the tag is `DRO` or `DRO2`.
 
 ## Errors
 

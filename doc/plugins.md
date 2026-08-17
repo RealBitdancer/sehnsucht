@@ -6,7 +6,7 @@ plugin kind has five parts:
 1. A small interface in one root module.
 2. One implementation per file in a named subdirectory.
 3. An explicit list in `src/registry.zig`.
-4. A compiling template, listed with every other module in `src/tests.zig`.
+4. A compiling template, listed in `src/tests.zig` because it has tests.
    Templates are not registered and do not ship in the executable. The test
    root keeps them compiling so scaffolding cannot rot.
 5. Registry validation for names and cross-plugin references, at compile
@@ -56,11 +56,12 @@ do not assemble foreground/background style pairs there. When existing roles do
 not cover a new visual element, add a `Theme.Role` tag and its line in
 `Theme.style`, then define its colors in every standalone theme.
 
-Add the exported `visualizer` to `registry.visualizers`, and the module to the
-list in `src/tests.zig`. Registration alone does not put its tests in the
-suite, and a module missing from that list stops being tested without failing
-the build. A format can use the visualizer after its registered
-`Format.visualizer` and returned `TrackInfo.visualizer` both name it.
+Add the exported `visualizer` to `registry.visualizers`. If the module
+declares tests, list it in `src/tests.zig`. Registration alone does not put
+its tests in the suite, and a module missing from that list stops being
+tested without failing the build. A format can use the visualizer after its
+registered `Format.visualizer` and returned `TrackInfo.visualizer` both name
+it.
 
 Test the smallest supported window, missing optional track data, and the
 minimum dimensions at which the visualizer draws content.
@@ -127,9 +128,10 @@ is `1.0`. Display names are user-facing and must be unique without regard to
 ASCII case. Descriptions must be non-empty and briefly identify the theme's
 appearance.
 
-Add the exported `theme` to `registry.themes`, and the module to the list in
-`src/tests.zig`, which is what actually puts its tests in the suite. The first
-registered theme is the default. Registered themes appear in the Theme browser.
+Add the exported `theme` to `registry.themes`. If the module declares tests,
+list it in `src/tests.zig`. The first registered theme is the default.
+Registered themes appear in the Theme browser. Shipped themes are Midnight
+Azure (default), LCD Ink, and High Contrast.
 
 ## Registry checks
 

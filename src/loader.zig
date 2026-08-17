@@ -20,22 +20,39 @@ const ui = @import("ui.zig");
 /// Substitute selection after a failed load walks the play order in the
 /// job's direction, so a shuffle pass or a backward skip scans the entries
 /// the user would have heard next, not raw file indices.
+/// `wrap` is for startup (find any playable file) and for loop-all.
+/// Mid-session advance stops at the same ends as `stepOrder`.
 fn nextCandidate(
     order: []const usize,
     tried: []const bool,
     unplayable: []const bool,
     from: usize,
     dir: Direction,
+    wrap: bool,
 ) ?usize {
     const n = order.len;
     if (n == 0) return null;
     var pos = std.mem.indexOfScalar(usize, order, from) orelse 0;
     var steps: usize = 0;
     while (steps < n) : (steps += 1) {
-        pos = switch (dir) {
-            .next => (pos + 1) % n,
-            .prev => (pos + n - 1) % n,
-        };
+        switch (dir) {
+            .next => {
+                if (pos + 1 >= n) {
+                    if (!wrap) return null;
+                    pos = 0;
+                } else {
+                    pos += 1;
+                }
+            },
+            .prev => {
+                if (pos == 0) {
+                    if (!wrap) return null;
+                    pos = n - 1;
+                } else {
+                    pos -= 1;
+                }
+            },
+        }
         const idx = order[pos];
         const dead = idx < unplayable.len and unplayable[idx];
         if (idx < tried.len and !tried[idx] and !dead) return idx;
@@ -75,6 +92,7 @@ const LoadJob = struct {
     sibling2_path: ?[]u8,
     tried: []bool,
     track_index: u32 = 0,
+    skip_n: u32 = 0,
     engine_intact: bool = true,
     model_detached: bool = false,
     on_done: enum { proceed, skip, discard } = .proceed,
@@ -178,7 +196,7 @@ pub const Loader = struct {
 
     pub fn sameAdvance(self: *const Loader, dir: Direction) bool {
         const job = self.job orelse return false;
-        return job.purpose == .advance and job.dir == dir and job.on_done == .proceed;
+        return job.purpose == .advance and job.dir == dir;
     }
 
     pub fn request(
@@ -248,7 +266,8 @@ pub const Loader = struct {
 
     pub fn skipCurrent(self: *Loader) void {
         if (self.job) |*job| {
-            if (job.on_done == .proceed) job.on_done = .skip;
+            job.skip_n += 1;
+            job.on_done = .skip;
             self.state.abort.store(true, .release);
         }
     }
@@ -354,7 +373,7 @@ pub const Loader = struct {
         model.playlist_index = player.index;
         model.playlist_playing = true;
         if (follow) model.playlist_list.nav.syncTo(player.index, player.entries.len);
-        if (job.purpose == .replay) bridge.paused.store(false, .release);
+        if (job.purpose != .startup) bridge.paused.store(false, .release);
         if (job.purpose == .startup and !self.startup_show_playlist) {
             model.menu_view = .visualize;
             model.menu = .visualize;
@@ -397,8 +416,10 @@ pub const Loader = struct {
             },
             .skip => {
                 if (res) |bytes| self.gpa.free(bytes) else |_| {}
+                const skips = @max(1, job.skip_n);
+                job.skip_n = 0;
                 job.on_done = .proceed;
-                return self.advance(bridge, model, player, null);
+                return self.skipAhead(bridge, model, player, skips);
             },
             .proceed => {},
         }
@@ -411,13 +432,17 @@ pub const Loader = struct {
                 null;
             defer if (detached_path) |path| self.gpa.free(path);
             stripEngineIfIntact(job, player);
+            if (job.purpose == .advance or job.purpose == .jump) player.live_rate_hz = 0;
             const loaded = assembleTrack(
                 self.gpa,
                 player.engine,
                 job.path,
                 bytes,
                 .{ .sibling = sibling, .sibling2 = sibling2, .sibling_is_alt = sibling_is_alt },
-                if (job.purpose == .detached) player.tick_rate_hz else player.rateForIndex(job.idx),
+                if (job.purpose == .detached)
+                    (if (player.live_rate_hz != 0) player.live_rate_hz else player.tick_rate_hz)
+                else
+                    player.rateForIndex(job.idx),
                 job.track_index,
             ) catch |err| {
                 if (!job.model_detached) {
@@ -473,31 +498,56 @@ pub const Loader = struct {
         }
         const n = player.entries.len;
         if (n > 0) {
-            if (nextCandidate(player.order, job.tried, player.unplayable, job.idx, job.dir)) |ni| {
-                const new_path = try self.gpa.dupe(u8, player.entries[ni]);
-                errdefer self.gpa.free(new_path);
-                const new_sibling = try format.companionPath("sibling_path", self.gpa, new_path);
-                errdefer if (new_sibling) |s| self.gpa.free(s);
-                const new_sibling_alt = try format.companionPath("sibling_alt_path", self.gpa, new_path);
-                errdefer if (new_sibling_alt) |s| self.gpa.free(s);
-                const new_sibling2 = try format.companionPath("sibling2_path", self.gpa, new_path);
-                self.gpa.free(job.path);
-                job.path = new_path;
-                if (job.sibling_path) |s| self.gpa.free(s);
-                job.sibling_path = new_sibling;
-                if (job.sibling_alt_path) |s| self.gpa.free(s);
-                job.sibling_alt_path = new_sibling_alt;
-                if (job.sibling2_path) |s| self.gpa.free(s);
-                job.sibling2_path = new_sibling2;
-                job.tried[ni] = true;
-                job.idx = ni;
-                self.seq += 1;
-                job.seq = self.seq;
-                self.publishFetch(job.seq, job);
-                return .none;
+            const wrap = job.purpose == .startup or player.loop_all;
+            if (nextCandidate(player.order, job.tried, player.unplayable, job.idx, job.dir, wrap)) |ni| {
+                return self.retarget(player, job, ni);
             }
         }
         return self.exhaust(bridge, model, player);
+    }
+
+    fn skipAhead(
+        self: *Loader,
+        bridge: *Bridge,
+        model: *ui.Model,
+        player: *Player,
+        skips: u32,
+    ) !PollResult {
+        const job = &self.job.?;
+        const wrap = job.purpose == .startup or player.loop_all;
+        var from = job.idx;
+        var left = skips;
+        var dest: ?usize = null;
+        while (left > 0) : (left -= 1) {
+            dest = nextCandidate(player.order, job.tried, player.unplayable, from, job.dir, wrap);
+            from = dest orelse return self.exhaust(bridge, model, player);
+            if (from < job.tried.len) job.tried[from] = true;
+        }
+        return self.retarget(player, job, dest.?);
+    }
+
+    fn retarget(self: *Loader, player: *Player, job: *LoadJob, ni: usize) !PollResult {
+        const new_path = try self.gpa.dupe(u8, player.entries[ni]);
+        errdefer self.gpa.free(new_path);
+        const new_sibling = try format.companionPath("sibling_path", self.gpa, new_path);
+        errdefer if (new_sibling) |s| self.gpa.free(s);
+        const new_sibling_alt = try format.companionPath("sibling_alt_path", self.gpa, new_path);
+        errdefer if (new_sibling_alt) |s| self.gpa.free(s);
+        const new_sibling2 = try format.companionPath("sibling2_path", self.gpa, new_path);
+        self.gpa.free(job.path);
+        job.path = new_path;
+        if (job.sibling_path) |s| self.gpa.free(s);
+        job.sibling_path = new_sibling;
+        if (job.sibling_alt_path) |s| self.gpa.free(s);
+        job.sibling_alt_path = new_sibling_alt;
+        if (job.sibling2_path) |s| self.gpa.free(s);
+        job.sibling2_path = new_sibling2;
+        job.tried[ni] = true;
+        job.idx = ni;
+        self.seq += 1;
+        job.seq = self.seq;
+        self.publishFetch(job.seq, job);
+        return .none;
     }
 
     fn exhaust(self: *Loader, bridge: *Bridge, model: *ui.Model, player: *Player) !PollResult {
@@ -590,16 +640,18 @@ test "nextCandidate follows the play order and skips tried and dead entries" {
     const tried = [_]bool{ true, false, true, false };
     const dead = [_]bool{ false, false, false, true };
     const identity = [_]usize{ 0, 1, 2, 3 };
-    try std.testing.expectEqual(@as(?usize, 1), nextCandidate(&identity, &tried, &dead, 0, .next));
-    try std.testing.expectEqual(@as(?usize, 1), nextCandidate(&identity, &tried, &dead, 2, .next));
-    try std.testing.expectEqual(@as(?usize, 1), nextCandidate(&identity, &tried, &dead, 2, .prev));
+    try std.testing.expectEqual(@as(?usize, 1), nextCandidate(&identity, &tried, &dead, 0, .next, true));
+    try std.testing.expectEqual(@as(?usize, 1), nextCandidate(&identity, &tried, &dead, 2, .next, true));
+    try std.testing.expectEqual(@as(?usize, 1), nextCandidate(&identity, &tried, &dead, 2, .prev, true));
+    try std.testing.expectEqual(@as(?usize, null), nextCandidate(&identity, &tried, &dead, 2, .next, false));
+    try std.testing.expectEqual(@as(?usize, null), nextCandidate(&identity, &tried, &dead, 0, .prev, false));
     // Shuffled order 2, 3, 1, 0: after 2 comes 3 (dead), then 1.
     const shuffled = [_]usize{ 2, 3, 1, 0 };
-    try std.testing.expectEqual(@as(?usize, 1), nextCandidate(&shuffled, &tried, &dead, 2, .next));
-    try std.testing.expectEqual(@as(?usize, 1), nextCandidate(&shuffled, &tried, &dead, 0, .prev));
+    try std.testing.expectEqual(@as(?usize, 1), nextCandidate(&shuffled, &tried, &dead, 2, .next, true));
+    try std.testing.expectEqual(@as(?usize, 1), nextCandidate(&shuffled, &tried, &dead, 0, .prev, true));
     const all_tried = [_]bool{ true, true, true, false };
-    try std.testing.expectEqual(@as(?usize, null), nextCandidate(&identity, &all_tried, &dead, 1, .next));
-    try std.testing.expectEqual(@as(?usize, null), nextCandidate(&.{}, &tried, &dead, 1, .next));
+    try std.testing.expectEqual(@as(?usize, null), nextCandidate(&identity, &all_tried, &dead, 1, .next, true));
+    try std.testing.expectEqual(@as(?usize, null), nextCandidate(&.{}, &tried, &dead, 1, .next, true));
 }
 
 const LoaderHarness = struct {
