@@ -34,8 +34,11 @@ audiot
 data/Audiot.SOD
 ```
 
-Names such as `AUDIOTEST.WL6`, `AUDIOTRACK.CK4`, and `AUDIODCT.CK4` do not
-match. Any file of the family may be opened. An `AUDIOHED.*` entry resolves
+Names such as `AUDIOTEST.WL6`, `AUDIOTRACK.CK4`, `AUDIODCT.CK4`, and
+`AUDIOMUS.CO7` do not match. `AUDIOMUS` is digitized audio, not the IMF
+archive.
+
+Any matching file of the family may be opened. An `AUDIOHED.*` entry resolves
 the uncompressed `AUDIOT.*` companion first and falls back to the compressed
 `AUDIO.*` when that read fails, so a Keen directory works from either file.
 
@@ -201,9 +204,9 @@ The rate comes from the opened path's extension. Opening `AUDIOHED.WL6` or
 
 | Extension | Default |
 |-----------|--------:|
-| `.wl1`, `.wl6`, `.sod`, `.sdm` | 700 Hz |
-| `.sd1`, `.sd2`, `.sd3`, `.bs1`, `.bs6` | 700 Hz |
-| Any other extension | 560 Hz |
+| `.wl1`, `.wl6`, `.sod`, `.sdm`, `.sd1`, `.sd2`, `.sd3` | 700 Hz |
+| `.bs1`, `.bs6`, `.vsi`, `.co7`, `.bc` | 700 Hz |
+| Any other extension (Keen `.ck*` included) | 560 Hz |
 
 Extension matching ignores case. A configured rate overrides the default.
 Valid overrides are 280, 560, and 700 Hz. The **R** key cycles those values

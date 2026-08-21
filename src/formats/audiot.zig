@@ -12,7 +12,7 @@ const imf = @import("imf.zig");
 
 const min_music_bytes: usize = 400;
 
-const wolf_exts = [_][]const u8{ ".wl1", ".wl6", ".sod", ".sdm", ".sd1", ".sd2", ".sd3", ".bs6", ".bs1" };
+const wolf_exts = [_][]const u8{ ".wl1", ".wl6", ".sod", ".sdm", ".sd1", ".sd2", ".sd3", ".bs6", ".bs1", ".vsi", ".co7", ".bc" };
 
 fn matchesStem(base: []const u8, stem: []const u8) bool {
     if (!std.ascii.startsWithIgnoreCase(base, stem)) return false;
@@ -492,6 +492,7 @@ test "audiot loads from prefetched sibling bytes without io" {
     })) orelse return error.TestUnexpectedResult;
     defer src.deinit(gpa);
     try std.testing.expectEqual(@as(u32, 1), src.info().archive_track_count);
+    try std.testing.expectEqual(@as(u32, 700), src.getTickRate().?);
 
     const src2 = (try fmt.load(gpa, "game/AUDIOHED.WL6", &hed, .{
         .sample_rate = 44100,

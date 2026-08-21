@@ -15,9 +15,8 @@ const rows_per_pattern = 64;
 const instrument_count = 128;
 const instrument_size = 12;
 const order_len = 51;
-const order_slots = 128;
+const order_slots = 256;
 const max_patterns = 50;
-const order_wrap = 50;
 const header_bytes = instrument_count * instrument_size + order_len;
 const pattern_bytes = rows_per_pattern * channels * 2;
 const max_file_bytes = header_bytes + max_patterns * pattern_bytes + 1;
@@ -63,8 +62,8 @@ const EffectHi = struct {
 const level_mask: u8 = 63;
 const key_on_bit: u8 = 32;
 const song_end_marker: u8 = 0xff;
-const order_jump_max: u8 = 0xb1;
 const order_end_min: u8 = 0xb2;
+const order_jump_limit: u8 = 0x31;
 const note_off_raw: u8 = 0x7f;
 
 /// Mirrors the 12 bytes an instrument occupies in the file, in order.
@@ -104,15 +103,17 @@ const Instrument = extern struct {
 
     fn applyLoadFixups(self: *Instrument) void {
         self.carrier_level ^= (self.carrier_level & 0x40) << 1;
-        self.modulator_level ^= (self.modulator_level & 0x40) << 1;
+        if (self.additive()) {
+            self.modulator_level ^= (self.modulator_level & 0x40) << 1;
+        }
         self.slide >>= 4;
     }
 };
 
 const Channel = struct {
-    instrument: u8 = 0,
-    slide: i8 = 0,
+    instrument: u8 = 0xFF,
     freq: u16 = 0,
+    dirty: bool = false,
 };
 
 const PatternCell = struct {
@@ -126,9 +127,13 @@ const PatternCell = struct {
         return self.effect & 0x0f;
     }
     fn isInstrumentSet(self: PatternCell) bool {
-        return self.note & 128 != 0;
+        return self.note == 0x80;
     }
 };
+
+fn noteWord(n: u8) u16 {
+    return note_fnum[n % 12] +% (@as(u16, n / 12) << 10) +% 0x2000;
+}
 
 const HscSource = struct {
     sample_rate: u32,
@@ -143,9 +148,6 @@ const HscSource = struct {
     order_pos: u8 = 0,
     pattern_break: bool = false,
     song_end: bool = false,
-    rhythm_mode: bool = false,
-    bd: u8 = 0,
-    fadein: u8 = 0,
     speed: u32 = 2,
     delay: u32 = 1,
     cur_order: u8 = 0,
@@ -168,10 +170,28 @@ const HscSource = struct {
         };
     }
 
-    fn setFreq(self: *HscSource, chip: fmt.Chip, chan: u8, freq: u16) void {
-        self.key_block[chan] = (self.key_block[chan] & ~@as(u8, 3)) | @as(u8, @truncate(freq >> 8));
-        chip.writeReg(Reg.fnum_lo + chan, @truncate(freq & 0xff));
-        chip.writeReg(Reg.key_block + chan, self.key_block[chan]);
+    fn orderByte(self: *const HscSource, slot: u8) u8 {
+        const idx = instrument_count * instrument_size + @as(usize, slot);
+        if (idx >= self.file.len) return song_end_marker;
+        return self.file[idx];
+    }
+
+    fn writeFreq(self: *HscSource, chip: fmt.Chip, chan: u8) void {
+        const ins = self.instrument(self.channel[chan].instrument);
+        if (ins.slide == 0 and !self.channel[chan].dirty) return;
+        self.channel[chan].dirty = false;
+        const lo: u8 = @truncate(self.channel[chan].freq);
+        const b0: u8 = @truncate(self.channel[chan].freq >> 8);
+        self.key_block[chan] = b0;
+        chip.writeReg(Reg.fnum_lo + chan, lo +% ins.slide);
+        chip.writeReg(Reg.key_block + chan, b0);
+    }
+
+    fn slideFreq(self: *HscSource, chan: u8, delta: u8, up: bool) void {
+        var lo: u8 = @truncate(self.channel[chan].freq);
+        if (up) lo +%= delta else lo -%= delta;
+        self.channel[chan].freq = (self.channel[chan].freq & 0xff00) | lo;
+        self.channel[chan].dirty = true;
     }
 
     fn setVolume(self: *HscSource, chip: fmt.Chip, chan: u8, carrier_vol: u8, modulator_vol: u8) void {
@@ -187,12 +207,12 @@ const HscSource = struct {
 
     fn setInstrument(self: *HscSource, chip: fmt.Chip, chan: u8, index: u8) void {
         if (index >= instrument_count) return;
+        if (self.channel[chan].instrument == index) return;
         const ins = self.instrument(index);
         const op = op_offset[chan];
         self.channel[chan].instrument = index;
         self.last_instrument = index;
-        self.key_block[chan] &= ~@as(u8, key_on_bit);
-        chip.writeReg(Reg.key_block + chan, self.key_block[chan]);
+        chip.writeReg(Reg.key_block + chan, 0);
         chip.writeReg(Reg.feedback + chan, ins.feedback_conn);
         chip.writeReg(Reg.carrier_char + op, ins.carrier_char);
         chip.writeReg(Reg.modulator_char + op, ins.modulator_char);
@@ -205,127 +225,84 @@ const HscSource = struct {
         self.setVolume(chip, chan, ins.carrierLevelField(), ins.modulatorLevelField());
     }
 
+    fn setSpeed(self: *HscSource, nibble: u8) void {
+        self.speed = @as(u32, nibble) + 1;
+        self.delay = self.speed;
+    }
+
+    fn playNote(self: *HscSource, chip: fmt.Chip, chan: u8, note: u8) void {
+        if (note == note_off_raw) {
+            self.channel[chan].freq &= ~@as(u16, 0x2000);
+            self.channel[chan].dirty = true;
+            return;
+        }
+        const n = note -% 1;
+        chip.writeReg(Reg.key_block + chan, 0);
+        self.channel[chan].freq = noteWord(n);
+        self.channel[chan].dirty = true;
+        self.last_instrument = self.channel[chan].instrument;
+    }
+
+    fn resolveOrderJump(self: *HscSource) void {
+        const v = self.orderByte(self.order_pos);
+        if (v & 128 == 0) return;
+        var dest: u8 = if (v == song_end_marker) 0 else v -% 128;
+        if (dest >= order_jump_limit) dest = 0;
+        self.order_pos = dest;
+        self.song_end = true;
+    }
+
+    fn advanceOrder(self: *HscSource) void {
+        const prev = self.order_pos;
+        self.order_pos +%= 1;
+        self.resolveOrderJump();
+        if (prev < order_len and self.order_pos >= order_len) self.song_end = true;
+    }
+
     fn playRow(self: *HscSource, chip: fmt.Chip, pattern: u8) void {
         for (0..channels) |chan_usize| {
             const chan: u8 = @intCast(chan_usize);
             const pc = self.patternCell(pattern, self.row, chan) orelse continue;
 
             if (pc.isInstrumentSet()) {
-                self.setInstrument(chip, chan, pc.effect);
+                self.setInstrument(chip, chan, pc.effect & (instrument_count - 1));
+                continue;
+            }
+
+            if (pc.note != 0) self.playNote(chip, chan, pc.note);
+
+            if (pc.effect == 0) continue;
+            if (pc.effect == 0x01) {
+                self.pattern_break = true;
                 continue;
             }
 
             const eff_op = pc.effectLo();
-            const inst = self.channel[chan].instrument;
-            const ins = self.instrument(inst);
-            if (pc.note != 0) self.channel[chan].slide = 0;
+            const ins = self.instrument(self.channel[chan].instrument);
 
             switch (pc.effectHi()) {
-                EffectHi.global => switch (eff_op) {
-                    1 => self.pattern_break = true,
-                    3 => self.fadein = 31,
-                    5 => self.rhythm_mode = true,
-                    6 => self.rhythm_mode = false,
-                    else => {},
-                },
                 EffectHi.slide_up, EffectHi.slide_down => {
-                    if (pc.effect & EffectHi.slide_up != 0) {
-                        self.channel[chan].freq +%= eff_op;
-                        self.channel[chan].slide +%= @intCast(eff_op);
-                    } else {
-                        self.channel[chan].freq -%= eff_op;
-                        self.channel[chan].slide -%= @intCast(eff_op);
-                    }
-                    if (pc.note == 0) self.setFreq(chip, chan, self.channel[chan].freq);
-                },
-                EffectHi.percussion => {
-                    if (eff_op <= 4) {
-                        self.rhythm_mode = true;
-                        self.bd = 0x20 | (@as(u8, 1) << @intCast(eff_op));
-                    } else if (eff_op <= 7) {
-                        self.bd = @as(u8, 1) << @intCast(eff_op);
-                        if (eff_op == 5) self.rhythm_mode = true;
-                    }
-                    chip.writeReg(Reg.rhythm, self.bd);
-                },
-                EffectHi.feedback => {
-                    chip.writeReg(
-                        Reg.feedback + chan,
-                        (ins.feedback_conn & 1) + (eff_op << 1),
-                    );
+                    self.slideFreq(chan, eff_op + 1, pc.effect & EffectHi.slide_up != 0);
                 },
                 EffectHi.carrier_vol => {
-                    const vol: u8 = eff_op << 2;
-                    chip.writeReg(Reg.carrier_level + op_offset[chan], vol | ins.carrierKslBits());
+                    chip.writeReg(Reg.carrier_level + op_offset[chan], eff_op << 2);
                 },
                 EffectHi.modulator_vol => {
-                    const vol: u8 = eff_op << 2;
-                    chip.writeReg(Reg.modulator_level + op_offset[chan], vol | ins.modulatorKslBits());
+                    chip.writeReg(Reg.modulator_level + op_offset[chan], eff_op << 2);
                 },
                 EffectHi.both_vol => {
                     const db: u8 = eff_op << 2;
-                    chip.writeReg(Reg.carrier_level + op_offset[chan], db | ins.carrierKslBits());
+                    chip.writeReg(Reg.carrier_level + op_offset[chan], db);
                     if (ins.additive()) {
-                        chip.writeReg(Reg.modulator_level + op_offset[chan], db | ins.modulatorKslBits());
+                        chip.writeReg(Reg.modulator_level + op_offset[chan], db);
                     }
                 },
-                EffectHi.position_jump => {
-                    self.pattern_break = true;
-                    self.order_pos = eff_op;
-                    self.song_end = true;
-                },
-                EffectHi.speed => {
-                    self.speed = @as(u32, eff_op) + 1;
-                    self.delay = self.speed;
-                },
-                else => {},
+                else => self.setSpeed(eff_op),
             }
+        }
 
-            if (self.fadein != 0) {
-                const v: u8 = self.fadein *% 2;
-                self.setVolume(chip, chan, v, v);
-            }
-
-            if (pc.note == 0) continue;
-            const n = pc.note -% 1;
-
-            if (n == note_off_raw - 1 or ((n / 12) & ~@as(u8, 7)) != 0) {
-                self.key_block[chan] &= ~@as(u8, key_on_bit);
-                chip.writeReg(Reg.key_block + chan, self.key_block[chan]);
-                continue;
-            }
-
-            const block: u8 = ((n / 12) & 7) << 2;
-            const slide_u16: u16 = @bitCast(@as(i16, self.channel[chan].slide));
-            const fnum: u16 = note_fnum[n % 12] +% ins.slide +% slide_u16;
-            self.channel[chan].freq = fnum;
-            self.last_instrument = inst;
-            if (!self.rhythm_mode or chan < 6) {
-                self.key_block[chan] = block | key_on_bit;
-            } else {
-                self.key_block[chan] = block;
-            }
-            chip.writeReg(Reg.key_block + chan, 0);
-            self.setFreq(chip, chan, fnum);
-
-            if (self.rhythm_mode) {
-                switch (chan) {
-                    6 => {
-                        chip.writeReg(Reg.rhythm, self.bd & ~@as(u8, 16));
-                        self.bd |= 48;
-                    },
-                    7 => {
-                        chip.writeReg(Reg.rhythm, self.bd & ~@as(u8, 1));
-                        self.bd |= 33;
-                    },
-                    8 => {
-                        chip.writeReg(Reg.rhythm, self.bd & ~@as(u8, 2));
-                        self.bd |= 34;
-                    },
-                    else => {},
-                }
-                chip.writeReg(Reg.rhythm, self.bd);
-            }
+        for (0..channels) |chan_usize| {
+            self.writeFreq(chip, @intCast(chan_usize));
         }
     }
 
@@ -333,39 +310,23 @@ const HscSource = struct {
         self.delay -= 1;
         if (self.delay != 0) return !self.song_end;
 
-        if (self.fadein != 0) self.fadein -= 1;
-
-        var pattern = self.order[self.order_pos];
-        if (pattern >= order_end_min) {
-            self.song_end = true;
-            self.order_pos = 0;
-            pattern = self.order[self.order_pos];
-        } else if ((pattern & 128) != 0 and pattern <= order_jump_max) {
-            self.order_pos = self.order[self.order_pos] & (order_slots - 1);
-            self.row = 0;
-            pattern = self.order[self.order_pos];
-            self.song_end = true;
-        }
-
+        const pattern = self.orderByte(self.order_pos);
         self.cur_order = self.order_pos;
         self.cur_row = self.row;
         self.cur_pattern = pattern;
 
-        if (pattern < self.num_patterns) {
-            self.playRow(chip, pattern);
-        }
+        self.playRow(chip, pattern);
 
         self.delay = self.speed;
         if (self.pattern_break) {
             self.row = 0;
             self.pattern_break = false;
-            self.order_pos = (self.order_pos + 1) % order_wrap;
-            if (self.order_pos == 0) self.song_end = true;
+            self.advanceOrder();
         } else {
-            self.row = (self.row + 1) & (rows_per_pattern - 1);
-            if (self.row == 0) {
-                self.order_pos = (self.order_pos + 1) % order_wrap;
-                if (self.order_pos == 0) self.song_end = true;
+            self.row +%= 1;
+            if (self.row == rows_per_pattern) {
+                self.row = 0;
+                self.advanceOrder();
             }
         }
         return !self.song_end;
@@ -418,19 +379,21 @@ const HscSource = struct {
     fn cell(ptr: *anyopaque, pattern: u8, row: u8, chan: u8) fmt.TrackerCell {
         const self: *HscSource = @ptrCast(@alignCast(ptr));
         const raw = self.patternCell(pattern, row, chan) orelse return .{ .kind = .empty };
-        if (raw.isInstrumentSet()) return .{ .kind = .set_instrument, .arg = raw.effect };
+        if (raw.isInstrumentSet()) {
+            return .{ .kind = .set_instrument, .arg = raw.effect & (instrument_count - 1) };
+        }
         if (raw.note == 0) {
             if (raw.effect == 0) return .{ .kind = .empty };
             return .{ .kind = .effect_only, .arg = raw.effect };
         }
-        const n = raw.note -% 1;
-        if (n == note_off_raw - 1 or ((n / 12) & ~@as(u8, 7)) != 0) {
+        if (raw.note == note_off_raw) {
             return .{ .kind = .note_off, .arg = raw.effect };
         }
+        const n = raw.note -% 1;
         return .{
             .kind = .note,
             .semitone = n % 12,
-            .octave = (n / 12) & 7,
+            .octave = n / 12,
             .arg = raw.effect,
         };
     }
@@ -481,15 +444,12 @@ fn load(
 
     for (0..order_len) |i| {
         var v = data[instr_bytes + i];
-        if (v < 0x80 and v >= num_patterns) v = song_end_marker;
         if (v >= order_end_min) v = song_end_marker;
         src.order[i] = v;
     }
 
-    for (&src.channel, 0..) |*ch, i| ch.instrument = @intCast(i);
-
     chip.writeReg(Reg.waveform_select, 0x20);
-    chip.writeReg(Reg.csw_note_sel, 0x80);
+    chip.writeReg(Reg.csw_note_sel, 0x40);
     chip.writeReg(Reg.rhythm, 0x00);
     for (0..channels) |i| {
         const ch: u8 = @intCast(i);
@@ -528,6 +488,7 @@ test "order end markers collapse to 0xff at load" {
     data[instr_bytes + 0] = 0;
     data[instr_bytes + 1] = 0xB5;
     data[instr_bytes + 2] = 0x90;
+    data[instr_bytes + 3] = 5;
 
     var chip = opal.Opal.init(44100);
     var src = (try fmt.load(gpa, "t.hsc", &data, .{ .sample_rate = 44100, .chip = chip_adapter.fromOpal(&chip) })).?;
@@ -537,6 +498,7 @@ test "order end markers collapse to 0xff at load" {
     try std.testing.expectEqual(@as(u8, 0), view.order[0]);
     try std.testing.expectEqual(@as(u8, 0xFF), view.order[1]);
     try std.testing.expectEqual(@as(u8, 0x90), view.order[2]);
+    try std.testing.expectEqual(@as(u8, 5), view.order[3]);
 }
 
 test "a measured duration does not cost HSC its own capabilities" {
@@ -656,13 +618,17 @@ test "hsc reports no title so the shell falls back to the file name" {
     try std.testing.expect(src.info().title == null);
 }
 
-test "hsc instrument-set keys off without zeroing block" {
+test "hsc instrument-set with zero slide leaves the key off" {
     const Rec = struct {
         b0: [channels]u8 = @splat(0),
+        a0: [channels]u8 = @splat(0),
         fn write(ptr: *anyopaque, reg: u16, val: u8) void {
             const self: *@This() = @ptrCast(@alignCast(ptr));
             if (reg >= Reg.key_block and reg < Reg.key_block + channels) {
                 self.b0[reg - Reg.key_block] = val;
+            }
+            if (reg >= Reg.fnum_lo and reg < Reg.fnum_lo + channels) {
+                self.a0[reg - Reg.fnum_lo] = val;
             }
         }
         fn flush(_: *anyopaque) void {}
@@ -692,9 +658,460 @@ test "hsc instrument-set keys off without zeroing block" {
 
     _ = src.step(rec.chip());
     try std.testing.expect(rec.b0[0] & key_on_bit != 0);
+    const a0 = rec.a0[0];
 
     _ = src.step(rec.chip());
     _ = src.step(rec.chip());
-    try std.testing.expect(rec.b0[0] & key_on_bit == 0);
-    try std.testing.expect(rec.b0[0] != 0);
+    try std.testing.expectEqual(a0, rec.a0[0]);
+    try std.testing.expectEqual(@as(u8, 0), rec.b0[0]);
+}
+
+test "hsc instrument-set with slide rewrites the held pitch" {
+    const Rec = struct {
+        b0: [channels]u8 = @splat(0),
+        a0: [channels]u8 = @splat(0),
+        fn write(ptr: *anyopaque, reg: u16, val: u8) void {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            if (reg >= Reg.key_block and reg < Reg.key_block + channels) {
+                self.b0[reg - Reg.key_block] = val;
+            }
+            if (reg >= Reg.fnum_lo and reg < Reg.fnum_lo + channels) {
+                self.a0[reg - Reg.fnum_lo] = val;
+            }
+        }
+        fn flush(_: *anyopaque) void {}
+        fn chip(self: *@This()) fmt.Chip {
+            return .{
+                .ptr = self,
+                .vtable = &.{ .writeReg = write, .flush = flush },
+            };
+        }
+    };
+
+    const gpa = std.testing.allocator;
+    var data: [header_bytes + pattern_bytes]u8 = @splat(0);
+    data[11] = 0x40;
+    data[12 + 11] = 0x40;
+    data[instrument_count * instrument_size] = 0;
+    data[header_bytes + 0] = 37;
+    data[header_bytes + channels * 2] = 0x80;
+    data[header_bytes + channels * 2 + 1] = 1;
+
+    var rec = Rec{};
+    const src = (try load(gpa, &data, .{
+        .sample_rate = 44100,
+        .chip = rec.chip(),
+        .ext = ".hsc",
+        .name = "t.hsc",
+    })).?;
+    defer src.deinit(gpa);
+
+    _ = src.step(rec.chip());
+    try std.testing.expect(rec.b0[0] & key_on_bit != 0);
+
+    _ = src.step(rec.chip());
+    _ = src.step(rec.chip());
+    try std.testing.expect(rec.b0[0] & key_on_bit != 0);
+}
+
+test "hsc same instrument-set does not key off" {
+    const Rec = struct {
+        b0: [channels]u8 = @splat(0),
+        fn write(ptr: *anyopaque, reg: u16, val: u8) void {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            if (reg >= Reg.key_block and reg < Reg.key_block + channels) {
+                self.b0[reg - Reg.key_block] = val;
+            }
+        }
+        fn flush(_: *anyopaque) void {}
+        fn chip(self: *@This()) fmt.Chip {
+            return .{
+                .ptr = self,
+                .vtable = &.{ .writeReg = write, .flush = flush },
+            };
+        }
+    };
+
+    const gpa = std.testing.allocator;
+    var data: [header_bytes + pattern_bytes]u8 = @splat(0);
+    data[instrument_count * instrument_size] = 0;
+    data[header_bytes + 0] = 37;
+    data[header_bytes + channels * 2] = 0x80;
+    data[header_bytes + channels * 2 + 1] = 0;
+
+    var rec = Rec{};
+    const src = (try load(gpa, &data, .{
+        .sample_rate = 44100,
+        .chip = rec.chip(),
+        .ext = ".hsc",
+        .name = "t.hsc",
+    })).?;
+    defer src.deinit(gpa);
+
+    _ = src.step(rec.chip());
+    try std.testing.expect(rec.b0[0] & key_on_bit != 0);
+    _ = src.step(rec.chip());
+    _ = src.step(rec.chip());
+    try std.testing.expect(rec.b0[0] & key_on_bit != 0);
+}
+
+test "hsc note words and 1x slides match the NEO player" {
+    const Rec = struct {
+        a0: u8 = 0,
+        b0: u8 = 0,
+        fn write(ptr: *anyopaque, reg: u16, val: u8) void {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            if (reg == Reg.fnum_lo) self.a0 = val;
+            if (reg == Reg.key_block) self.b0 = val;
+        }
+        fn flush(_: *anyopaque) void {}
+        fn chip(self: *@This()) fmt.Chip {
+            return .{
+                .ptr = self,
+                .vtable = &.{ .writeReg = write, .flush = flush },
+            };
+        }
+    };
+
+    const gpa = std.testing.allocator;
+
+    {
+        var data: [header_bytes + pattern_bytes]u8 = @splat(0);
+        data[instrument_count * instrument_size] = 0;
+        data[header_bytes + 0] = 1;
+        var rec = Rec{};
+        const src = (try load(gpa, &data, .{
+            .sample_rate = 44100,
+            .chip = rec.chip(),
+            .ext = ".hsc",
+            .name = "t.hsc",
+        })).?;
+        defer src.deinit(gpa);
+        _ = src.step(rec.chip());
+        try std.testing.expectEqual(@as(u8, 0x6B), rec.a0);
+        try std.testing.expectEqual(@as(u8, 0x21), rec.b0);
+    }
+
+    {
+        var data: [header_bytes + pattern_bytes]u8 = @splat(0);
+        data[instrument_count * instrument_size] = 0;
+        data[header_bytes + 0] = 84;
+        var rec = Rec{};
+        const src = (try load(gpa, &data, .{
+            .sample_rate = 44100,
+            .chip = rec.chip(),
+            .ext = ".hsc",
+            .name = "t.hsc",
+        })).?;
+        defer src.deinit(gpa);
+        _ = src.step(rec.chip());
+        try std.testing.expectEqual(@as(u8, 0xAE), rec.a0);
+        try std.testing.expectEqual(@as(u8, 0x3A), rec.b0);
+    }
+
+    {
+        var data: [header_bytes + pattern_bytes]u8 = @splat(0);
+        data[instrument_count * instrument_size] = 0;
+        data[header_bytes + 0] = 1;
+        data[header_bytes + 1] = 0x12;
+        var rec = Rec{};
+        const src = (try load(gpa, &data, .{
+            .sample_rate = 44100,
+            .chip = rec.chip(),
+            .ext = ".hsc",
+            .name = "t.hsc",
+        })).?;
+        defer src.deinit(gpa);
+        _ = src.step(rec.chip());
+        try std.testing.expectEqual(@as(u8, 0x6B + 3), rec.a0);
+        try std.testing.expectEqual(@as(u8, 0x21), rec.b0);
+    }
+}
+
+test "hsc init enables NOTE-SEL not CSM" {
+    const Rec = struct {
+        reg08: u8 = 0,
+        fn write(ptr: *anyopaque, reg: u16, val: u8) void {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            if (reg == Reg.csw_note_sel) self.reg08 = val;
+        }
+        fn flush(_: *anyopaque) void {}
+        fn chip(self: *@This()) fmt.Chip {
+            return .{
+                .ptr = self,
+                .vtable = &.{ .writeReg = write, .flush = flush },
+            };
+        }
+    };
+
+    const gpa = std.testing.allocator;
+    var data: [header_bytes + pattern_bytes]u8 = @splat(0);
+    data[instrument_count * instrument_size] = 0;
+
+    var rec = Rec{};
+    const src = (try load(gpa, &data, .{
+        .sample_rate = 44100,
+        .chip = rec.chip(),
+        .ext = ".hsc",
+        .name = "t.hsc",
+    })).?;
+    defer src.deinit(gpa);
+    try std.testing.expectEqual(@as(u8, 0x40), rec.reg08);
+}
+
+test "hsc 3x sets speed like Fx matching the NEO player fallthrough" {
+    const Helper = struct {
+        fn speedAfterEffect(effect: u8) !u8 {
+            const gpa = std.testing.allocator;
+            var data: [header_bytes + pattern_bytes]u8 = @splat(0);
+            data[instrument_count * instrument_size] = 0;
+            data[header_bytes + 1] = effect;
+
+            var chip = opal.Opal.init(44100);
+            const src = (try load(gpa, &data, .{
+                .sample_rate = 44100,
+                .chip = chip_adapter.fromOpal(&chip),
+                .ext = ".hsc",
+                .name = "t.hsc",
+            })).?;
+            defer src.deinit(gpa);
+            _ = src.step(chip_adapter.fromOpal(&chip));
+            return src.pos().?.speed;
+        }
+    };
+    try std.testing.expectEqual(@as(u8, 3), try Helper.speedAfterEffect(0x32));
+    try std.testing.expectEqual(@as(u8, 3), try Helper.speedAfterEffect(0xF2));
+    try std.testing.expectEqual(@as(u8, 1), try Helper.speedAfterEffect(0x30));
+    try std.testing.expectEqual(@as(u8, 16), try Helper.speedAfterEffect(0x3F));
+    try std.testing.expectEqual(@as(u8, 5), try Helper.speedAfterEffect(0x44));
+    try std.testing.expectEqual(@as(u8, 2), try Helper.speedAfterEffect(0x81));
+    try std.testing.expectEqual(@as(u8, 8), try Helper.speedAfterEffect(0x07));
+    try std.testing.expectEqual(@as(u8, 2), try Helper.speedAfterEffect(0x13));
+    try std.testing.expectEqual(@as(u8, 2), try Helper.speedAfterEffect(0x01));
+    try std.testing.expectEqual(@as(u8, 4), try Helper.speedAfterEffect(0x03));
+    try std.testing.expectEqual(@as(u8, 3), try Helper.speedAfterEffect(0x52));
+    try std.testing.expectEqual(@as(u8, 9), try Helper.speedAfterEffect(0x68));
+    try std.testing.expectEqual(@as(u8, 2), try Helper.speedAfterEffect(0xD1));
+}
+
+test "hsc KSL xor is carrier always and modulator only when additive" {
+    const Rec = struct {
+        lvl: [0x56]u8 = @splat(0),
+        fn write(ptr: *anyopaque, reg: u16, val: u8) void {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            if (reg < self.lvl.len) self.lvl[reg] = val;
+        }
+        fn flush(_: *anyopaque) void {}
+        fn chip(self: *@This()) fmt.Chip {
+            return .{
+                .ptr = self,
+                .vtable = &.{ .writeReg = write, .flush = flush },
+            };
+        }
+    };
+
+    const gpa = std.testing.allocator;
+
+    {
+        var data: [header_bytes + pattern_bytes]u8 = @splat(0);
+        data[instrument_count * instrument_size] = 0;
+        data[2] = 0x56;
+        data[3] = 0xC0;
+        data[8] = 0;
+        var rec = Rec{};
+        const src = (try load(gpa, &data, .{
+            .sample_rate = 44100,
+            .chip = rec.chip(),
+            .ext = ".hsc",
+            .name = "t.hsc",
+        })).?;
+        defer src.deinit(gpa);
+        try std.testing.expectEqual(@as(u8, 0xD6), rec.lvl[Reg.carrier_level]);
+        try std.testing.expectEqual(@as(u8, 0xC0), rec.lvl[Reg.modulator_level]);
+    }
+
+    {
+        var data: [header_bytes + pattern_bytes]u8 = @splat(0);
+        data[instrument_count * instrument_size] = 0;
+        data[2] = 0x56;
+        data[3] = 0xC0;
+        data[8] = 1;
+        var rec = Rec{};
+        const src = (try load(gpa, &data, .{
+            .sample_rate = 44100,
+            .chip = rec.chip(),
+            .ext = ".hsc",
+            .name = "t.hsc",
+        })).?;
+        defer src.deinit(gpa);
+        try std.testing.expectEqual(@as(u8, 0xD6), rec.lvl[Reg.carrier_level]);
+        try std.testing.expectEqual(@as(u8, 0x40), rec.lvl[Reg.modulator_level]);
+    }
+}
+
+test "hsc 6x sets speed and leaves feedback alone" {
+    const Rec = struct {
+        c0: [channels]u8 = @splat(0),
+        fn write(ptr: *anyopaque, reg: u16, val: u8) void {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            if (reg >= Reg.feedback and reg < Reg.feedback + channels) {
+                self.c0[reg - Reg.feedback] = val;
+            }
+        }
+        fn flush(_: *anyopaque) void {}
+        fn chip(self: *@This()) fmt.Chip {
+            return .{
+                .ptr = self,
+                .vtable = &.{ .writeReg = write, .flush = flush },
+            };
+        }
+    };
+
+    const gpa = std.testing.allocator;
+    var data: [header_bytes + pattern_bytes]u8 = @splat(0);
+    data[instrument_count * instrument_size] = 0;
+    data[8] = 0x01;
+    data[header_bytes + 1] = 0x68;
+
+    var rec = Rec{};
+    const src = (try load(gpa, &data, .{
+        .sample_rate = 44100,
+        .chip = rec.chip(),
+        .ext = ".hsc",
+        .name = "t.hsc",
+    })).?;
+    defer src.deinit(gpa);
+    _ = src.step(rec.chip());
+    try std.testing.expectEqual(@as(u8, 0x01), rec.c0[0]);
+    try std.testing.expectEqual(@as(u8, 9), src.pos().?.speed);
+}
+
+test "hsc An replaces carrier KSL bits" {
+    const Rec = struct {
+        lvl: u8 = 0,
+        fn write(ptr: *anyopaque, reg: u16, val: u8) void {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            if (reg == Reg.carrier_level) self.lvl = val;
+        }
+        fn flush(_: *anyopaque) void {}
+        fn chip(self: *@This()) fmt.Chip {
+            return .{
+                .ptr = self,
+                .vtable = &.{ .writeReg = write, .flush = flush },
+            };
+        }
+    };
+
+    const gpa = std.testing.allocator;
+    var data: [header_bytes + pattern_bytes]u8 = @splat(0);
+    data[instrument_count * instrument_size] = 0;
+    data[2] = 0x50;
+    data[header_bytes + 1] = 0xA4;
+
+    var rec = Rec{};
+    const src = (try load(gpa, &data, .{
+        .sample_rate = 44100,
+        .chip = rec.chip(),
+        .ext = ".hsc",
+        .name = "t.hsc",
+    })).?;
+    defer src.deinit(gpa);
+    _ = src.step(rec.chip());
+    try std.testing.expectEqual(@as(u8, 0x10), rec.lvl);
+}
+
+test "ab render fmtrk2 wav" {
+    const gpa = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init(gpa, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    std.Io.Dir.cwd().access(io, "tmp/hsc-ab/render.flag", .{}) catch return error.SkipZigTest;
+
+    const path = "tmp/fmtrk2.hsc";
+    const data = std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(max_file_bytes)) catch return error.SkipZigTest;
+    defer gpa.free(data);
+
+    const LogChip = struct {
+        opal: *opal.Opal,
+        gpa: std.mem.Allocator,
+        events: std.ArrayList(u8) = .empty,
+        frames: u64 = 0,
+
+        fn write(ptr: *anyopaque, reg: u16, val: u8) void {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            self.opal.writeRegBuffered(reg, val);
+            var line_buf: [48]u8 = undefined;
+            const line = std.fmt.bufPrint(&line_buf, "{d} {x:0>2} {x:0>2}\n", .{ self.frames, reg, val }) catch return;
+            self.events.appendSlice(self.gpa, line) catch {};
+        }
+        fn flush(ptr: *anyopaque) void {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            self.opal.flushWriteBuf();
+        }
+        const vtable = fmt.Chip.VTable{ .writeReg = write, .flush = flush };
+        fn chip(self: *@This()) fmt.Chip {
+            return .{ .ptr = self, .vtable = &vtable };
+        }
+    };
+
+    const sample_rate: u32 = 44100;
+    const seconds: u32 = 45;
+    var chip_store = try gpa.create(opal.Opal);
+    defer gpa.destroy(chip_store);
+    chip_store.* = opal.Opal.init(@intCast(sample_rate));
+    var log = LogChip{ .opal = chip_store, .gpa = gpa };
+    defer log.events.deinit(gpa);
+    const chip = log.chip();
+
+    var src = (try fmt.load(gpa, path, data, .{
+        .sample_rate = sample_rate,
+        .chip = chip,
+        .ext = ".hsc",
+        .name = "fmtrk2.hsc",
+    })).?;
+    defer src.deinit(gpa);
+
+    const frames: usize = @as(usize, sample_rate) * seconds;
+    const pcm = try gpa.alloc(i16, frames * 2);
+    defer gpa.free(pcm);
+
+    var wait: u64 = 0;
+    var written: usize = 0;
+    while (written < frames) {
+        if (wait == 0) {
+            const r = src.step(chip);
+            wait = r.frames;
+            if (r.frames == 0) break;
+        }
+        const n: usize = @intCast(@min(wait, frames - written));
+        chip_store.render(pcm[written * 2 .. (written + n) * 2]);
+        wait -= n;
+        written += n;
+        log.frames += n;
+    }
+
+    var hdr: [44]u8 = undefined;
+    const bytes: u32 = @intCast(written * 4);
+    @memcpy(hdr[0..4], "RIFF");
+    std.mem.writeInt(u32, hdr[4..8], 36 + bytes, .little);
+    @memcpy(hdr[8..12], "WAVE");
+    @memcpy(hdr[12..16], "fmt ");
+    std.mem.writeInt(u32, hdr[16..20], 16, .little);
+    std.mem.writeInt(u16, hdr[20..22], 1, .little);
+    std.mem.writeInt(u16, hdr[22..24], 2, .little);
+    std.mem.writeInt(u32, hdr[24..28], sample_rate, .little);
+    std.mem.writeInt(u32, hdr[28..32], sample_rate * 4, .little);
+    std.mem.writeInt(u16, hdr[32..34], 4, .little);
+    std.mem.writeInt(u16, hdr[34..36], 16, .little);
+    @memcpy(hdr[36..40], "data");
+    std.mem.writeInt(u32, hdr[40..44], bytes, .little);
+
+    var file = try std.Io.Dir.cwd().createFile(io, "tmp/hsc-ab/fmtrk2-sehnsucht.wav", .{});
+    defer file.close(io);
+    try file.writePositionalAll(io, &hdr, 0);
+    try file.writePositionalAll(io, std.mem.sliceAsBytes(pcm[0 .. written * 2]), hdr.len);
+
+    var opl = try std.Io.Dir.cwd().createFile(io, "tmp/hsc-ab/fmtrk2-sehnsucht.opl.txt", .{});
+    defer opl.close(io);
+    try opl.writePositionalAll(io, log.events.items, 0);
 }

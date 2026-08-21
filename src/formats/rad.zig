@@ -73,6 +73,7 @@ const Effects = struct {
 
 const Channel = struct {
     instrument: u8 = 0,
+    last_used: u8 = 0,
     volume: u8 = 64,
     key_on: bool = false,
     keyed: bool = false,
@@ -88,6 +89,7 @@ const Cell = struct {
     instrument: u8 = 0,
     effect: u8 = 0,
     param: u8 = 0,
+    retrigger: bool = false,
 };
 
 const Line = struct {
@@ -235,9 +237,16 @@ const RadSource = struct {
         fx.tone_slide_dir = speed;
     }
 
-    fn playNote(self: *RadSource, chip: fmt.Chip, ch: u8, note: u8, octave: u8, inst: u8, effect: u8, param: u8) void {
+    fn playNote(self: *RadSource, chip: fmt.Chip, ch: u8, note: u8, octave: u8, inst: u8, effect: u8, param: u8, retrigger: bool) void {
         var cs = &self.channels_state[ch];
         const fx = &cs.fx;
+
+        var used = inst;
+        if (retrigger and used == 0) used = cs.last_used;
+        if (used > 0) {
+            cs.last_used = used;
+            self.last_instrument = used;
+        }
 
         if (effect == @intFromEnum(Effect.tone_slide)) {
             if (note >= 1 and note <= 12) {
@@ -249,10 +258,9 @@ const RadSource = struct {
             return;
         }
 
-        if (inst > 0 and inst <= self.instruments.len) {
-            cs.instrument = inst;
-            self.last_instrument = inst;
-            self.loadInstrument(chip, ch, &self.instruments[inst - 1]);
+        if (used > 0 and used <= self.instruments.len) {
+            cs.instrument = used;
+            self.loadInstrument(chip, ch, &self.instruments[used - 1]);
             cs.key_off = true;
             cs.key_on = true;
         }
@@ -262,7 +270,6 @@ const RadSource = struct {
                 cs.key_off = true;
                 self.playNoteOpl(chip, ch, 0, 15);
             } else if (note <= 12) {
-                cs.key_on = true;
                 self.playNoteOpl(chip, ch, octave, note);
             }
         }
@@ -345,8 +352,8 @@ const RadSource = struct {
 
         if (self.findLine(pat, self.line)) |row_line| {
             for (row_line.cells, 0..) |cell, ch| {
-                if (cell.note == 0 and cell.instrument == 0 and cell.effect == 0) continue;
-                self.playNote(chip, @intCast(ch), cell.note, cell.octave, cell.instrument, cell.effect, cell.param);
+                if (cell.note == 0 and cell.instrument == 0 and cell.effect == 0 and !cell.retrigger) continue;
+                self.playNote(chip, @intCast(ch), cell.note, cell.octave, cell.instrument, cell.effect, cell.param, cell.retrigger);
             }
         }
 
@@ -413,7 +420,8 @@ const RadSource = struct {
             @as(usize, pattern) * rows_per_pattern * channels +
                 @as(usize, row) * channels + chan
         ];
-        if (cell.note == 0 and cell.instrument == 0 and cell.effect == 0) return .{ .kind = .empty };
+        if (cell.note == 0 and cell.instrument == 0 and cell.effect == 0 and !cell.retrigger)
+            return .{ .kind = .empty };
         if (cell.note == 15) return .{ .kind = .note_off, .arg = cell.effect };
         if (cell.note >= 1 and cell.note <= 12) {
             return .{
@@ -425,6 +433,7 @@ const RadSource = struct {
         }
         if (cell.instrument != 0) return .{ .kind = .set_instrument, .arg = cell.instrument };
         if (cell.effect != 0) return .{ .kind = .effect_only, .arg = cell.effect };
+        if (cell.retrigger) return .{ .kind = .set_instrument, .arg = 0 };
         return .{ .kind = .empty };
     }
 
@@ -458,7 +467,7 @@ const ParseErr = error{ InvalidRad, UnsupportedRadVersion, OutOfMemory };
 
 const UnpackedNote = struct { done: bool, ch: u8, cell: Cell };
 
-fn unpackNoteV1(s: *[]const u8, last_inst: *u8) error{Truncated}!UnpackedNote {
+fn unpackNoteV1(s: *[]const u8) error{Truncated}!UnpackedNote {
     if (s.*.len < 3) return error.Truncated;
     const chanid = s.*[0];
     const note_b = s.*[1];
@@ -471,7 +480,6 @@ fn unpackNoteV1(s: *[]const u8, last_inst: *u8) error{Truncated}!UnpackedNote {
         .effect = inst_eff & 0x0f,
     };
     if (note_b & 0x80 != 0) cell.instrument |= 16;
-    if (cell.instrument != 0) last_inst.* = cell.instrument;
     if (cell.effect != 0) {
         if (s.*.len < 1) return error.Truncated;
         cell.param = s.*[0];
@@ -480,7 +488,7 @@ fn unpackNoteV1(s: *[]const u8, last_inst: *u8) error{Truncated}!UnpackedNote {
     return .{ .done = chanid & 0x80 != 0, .ch = chanid & 0x0f, .cell = cell };
 }
 
-fn unpackNoteV2(s: *[]const u8, last_inst: *u8) error{Truncated}!UnpackedNote {
+fn unpackNoteV2(s: *[]const u8) error{Truncated}!UnpackedNote {
     if (s.*.len < 1) return error.Truncated;
     const chanid = s.*[0];
     s.* = s.*[1..];
@@ -491,13 +499,12 @@ fn unpackNoteV2(s: *[]const u8, last_inst: *u8) error{Truncated}!UnpackedNote {
         s.* = s.*[1..];
         cell.note = n & 0x0f;
         cell.octave = (n >> 4) & 7;
-        if (n & 0x80 != 0) cell.instrument = last_inst.*;
+        if (n & 0x80 != 0) cell.retrigger = true;
     }
     if (chanid & 0x20 != 0) {
         if (s.*.len < 1) return error.Truncated;
         cell.instrument = s.*[0];
         s.* = s.*[1..];
-        last_inst.* = cell.instrument;
     }
     if (chanid & 0x10 != 0) {
         if (s.*.len < 2) return error.Truncated;
@@ -516,7 +523,6 @@ fn appendPatternLines(
 ) ParseErr![]Line {
     const start = lines.items.len;
     var s = data;
-    var last_inst: u8 = 0;
 
     if (version >= 2) {
         if (s.len < 2) return error.InvalidRad;
@@ -538,9 +544,9 @@ fn appendPatternLines(
         var truncated = false;
         while (s.len > 0) {
             const u = (if (version >= 2)
-                unpackNoteV2(&s, &last_inst)
+                unpackNoteV2(&s)
             else
-                unpackNoteV1(&s, &last_inst)) catch {
+                unpackNoteV1(&s)) catch {
                 truncated = true;
                 break;
             };
@@ -1013,6 +1019,122 @@ test "rad pattern with more lines than rows is invalid" {
         .chip = fmt.noop_chip,
         .ext = ".rad",
     }));
+}
+
+const RadRec = struct {
+    carrier_char: [channels]u8 = @splat(0),
+    char_writes: [channels]u32 = @splat(0),
+    b0: [channels]u8 = @splat(0),
+    keyed_off: bool = false,
+
+    const carrier_char_reg = [_]u16{ 0x23, 0x24, 0x25, 0x2b, 0x2c, 0x2d, 0x33, 0x34, 0x35 };
+
+    fn write(ptr: *anyopaque, reg: u16, val: u8) void {
+        const self: *@This() = @ptrCast(@alignCast(ptr));
+        for (carrier_char_reg, 0..) |r, i| {
+            if (reg == r) {
+                self.carrier_char[i] = val;
+                self.char_writes[i] += 1;
+            }
+        }
+        if (reg >= 0xb0 and reg < 0xb0 + channels) {
+            self.b0[reg - 0xb0] = val;
+            if (reg == 0xb0 and val & 0x20 == 0) self.keyed_off = true;
+        }
+    }
+    fn flush(_: *anyopaque) void {}
+    fn chip(self: *@This()) fmt.Chip {
+        return .{
+            .ptr = self,
+            .vtable = &.{ .writeReg = write, .flush = flush },
+        };
+    }
+};
+
+fn appendRadV2Instrument(list: *std.ArrayList(u8), gpa: std.mem.Allocator, num: u8, carrier_char: u8) !void {
+    try list.append(gpa, num);
+    try list.appendSlice(gpa, &.{ 0, 0x00, 0x00, 0x00, 64 });
+    try list.appendSlice(gpa, &.{ carrier_char, 0x00, 0xf1, 0x74, 0x00 });
+    try list.appendSlice(gpa, &.{ carrier_char, 0x10, 0xf1, 0x74, 0x00 });
+    try list.appendSlice(gpa, &([_]u8{0} ** 10));
+}
+
+fn appendRadV2Pattern(list: *std.ArrayList(u8), gpa: std.mem.Allocator, num: u8, payload: []const u8) !void {
+    try list.append(gpa, num);
+    const size: u16 = @intCast(payload.len);
+    try list.append(gpa, @truncate(size));
+    try list.append(gpa, @truncate(size >> 8));
+    try list.appendSlice(gpa, payload);
+}
+
+test "rad v2 retrigger uses each channel's last instrument" {
+    const gpa = std.testing.allocator;
+    var list: std.ArrayList(u8) = .empty;
+    defer list.deinit(gpa);
+    try list.appendSlice(gpa, magic);
+    try list.appendSlice(gpa, &.{ 0x21, 0x01, 0x00 });
+    try appendRadV2Instrument(&list, gpa, 1, 0x21);
+    try appendRadV2Instrument(&list, gpa, 2, 0x22);
+    try list.append(gpa, 0);
+    try list.appendSlice(gpa, &.{ 1, 0x00 });
+    try appendRadV2Pattern(&list, gpa, 0, &.{
+        0x00, 0x60, 0x41, 1, 0xe1, 0x41, 2,
+        0x81, 0xc0, 0xc2,
+    });
+    try list.appendSlice(gpa, &.{ 0xff, 0xff });
+
+    var rec = RadRec{};
+    const src = (try load(gpa, list.items, .{
+        .sample_rate = 44100,
+        .chip = rec.chip(),
+        .ext = ".rad",
+        .name = "retrigger.rad",
+    })).?;
+    defer src.deinit(gpa);
+
+    _ = src.step(rec.chip());
+    try std.testing.expectEqual(@as(u8, 0x21), rec.carrier_char[0]);
+    try std.testing.expectEqual(@as(u8, 0x22), rec.carrier_char[1]);
+
+    rec.char_writes = @splat(0);
+    _ = src.step(rec.chip());
+    try std.testing.expectEqual(@as(u8, 0x21), rec.carrier_char[0]);
+    try std.testing.expectEqual(@as(u8, 0x22), rec.carrier_char[1]);
+    try std.testing.expect(rec.char_writes[0] > 0);
+}
+
+test "rad v2 note without instrument does not bounce key-on" {
+    const gpa = std.testing.allocator;
+    var list: std.ArrayList(u8) = .empty;
+    defer list.deinit(gpa);
+    try list.appendSlice(gpa, magic);
+    try list.appendSlice(gpa, &.{ 0x21, 0x01, 0x00 });
+    try appendRadV2Instrument(&list, gpa, 1, 0x21);
+    try list.append(gpa, 0);
+    try list.appendSlice(gpa, &.{ 1, 0x00 });
+    try appendRadV2Pattern(&list, gpa, 0, &.{
+        0x00, 0xe0, 0x41, 1,
+        0x81, 0xc0, 0x42,
+    });
+    try list.appendSlice(gpa, &.{ 0xff, 0xff });
+
+    var rec = RadRec{};
+    const src = (try load(gpa, list.items, .{
+        .sample_rate = 44100,
+        .chip = rec.chip(),
+        .ext = ".rad",
+        .name = "legato.rad",
+    })).?;
+    defer src.deinit(gpa);
+
+    _ = src.step(rec.chip());
+    try std.testing.expect(rec.b0[0] & 0x20 != 0);
+    rec.keyed_off = false;
+    rec.char_writes = @splat(0);
+    _ = src.step(rec.chip());
+    try std.testing.expect(rec.b0[0] & 0x20 != 0);
+    try std.testing.expect(!rec.keyed_off);
+    try std.testing.expectEqual(@as(u32, 0), rec.char_writes[0]);
 }
 
 test "rad hostile effect params play without crashing" {

@@ -2,6 +2,44 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased]
+
+## [0.2.1] - 2026-08-20
+
+Bug-fix release, no new features.
+
+### Fixed
+
+- HSC playback follows HSC-Tracker HSCOBJ 1.4 / HSCPLAY. Unmatched effects
+  including `0x3n`, `0x5n`, `0x6n`, and `0xDn` set speed. `0x08` is `0x40`.
+  Notes use the original 16-bit frequency word. `0x1n`/`0x2n` slide the low
+  byte by `n + 1`. `0xAn`/`0xBn`/`0xCn` replace the level byte without keeping
+  KSL. An instrument-set with slide 0 leaves the key off. A repeat
+  instrument-set of the current patch is a no-op. Out-of-range order indexes
+  play empty rows instead of looping. The 51st order slot is played. The KSL
+  xor applies to the carrier always, and to the modulator only in additive
+  mode. Checked against all 234 modules in `playlists/hsc.m3u`.
+- HSC tracker cells show `effect & 0x7F` for an instrument-set and the
+  unclamped octave `n / 12`, matching playback.
+- RAD v2 note-retrigger uses each channel's last instrument at play time
+  (Reality `CChannel.LastInstrument`), not a load-time latch shared across
+  channels and reset per pattern. A note without an instrument change no
+  longer forces a key-on bounce. An instrument byte still updates the latch
+  when the patch is missing or the row is a tone slide.
+- CMF General-MIDI channel-9 drum remap loads AdPlug's five fallback
+  percussion patches onto rhythm channels 11..15, instead of file
+  instrument 0. The fallbacks live in a side table, so they cannot collide
+  with file patch numbers.
+- AudioT archives with Wolf-engine extensions `.vsi` (Blake Stone: Planet
+  Strike), `.co7` (Corridor 7), and `.bc` (Operation Body Count) default to
+  the 700 Hz IMF timer, not Keen's 560 Hz.
+
+### Changed
+
+- Format guides for HSC, RAD, CMF, and AudioT describe HSCOBJ playback,
+  Reality last-instrument retrigger, GM drum fallbacks, and Wolf-engine
+  AudioT rates.
+
 ## [0.2.0] - 2026-08-16
 
 ### Added

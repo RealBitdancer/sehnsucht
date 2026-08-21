@@ -115,7 +115,12 @@ the effect nibble is non-zero, one parameter byte follows. Note high bit adds
 16 to the instrument number.
 
 **v2 channel data:** optional note (chandef bit 6), optional instrument (bit 5),
-optional effect+param (bit 4). Note high bit retriggers the last instrument.
+optional effect+param (bit 4). Note high bit retriggers that channel's last
+instrument. Reality stores this as `CChannel.LastInstrument` and resolves it
+while playing, not while unpacking the file. The tracker view draws a
+retriggered note 1..12 as an ordinary note. A retrigger with note 0 (invalid
+in Reality's validator) still loads the last instrument and is drawn as an
+instrument-set with argument 0.
 
 Note values 1..12 are C..B. Note 15 is key-off. A pattern holds at most 64
 lines. Streams with more are invalid.
@@ -173,6 +178,16 @@ Speed is the number of ticks per row. Frame conversion uses
 RAD uses the tracker visualizer. Order wrap and jump markers set a song
 boundary so playlists can advance. Single-file play loops from the start of the
 order list.
+
+Instrument load is the only event that sets key-on (Reality `fKeyOn`). A note
+in 1..12 without an instrument byte (and without the retrigger bit) changes
+pitch on a channel that is already keyed, and does not bounce the key. The
+retrigger bit is the usual way a later note reloads the last patch and bounces.
+An instrument byte still updates that channel's last-instrument latch even when
+the row is a tone slide (Reality records `LastInstrument` in `UnpackNote` before
+`PlayNote` skips the load), and even when that number is past the highest
+instrument defined in the file. A later retrigger then has nothing to load,
+instead of bouncing the previous valid patch.
 
 ## Metadata
 

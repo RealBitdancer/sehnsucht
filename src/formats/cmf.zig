@@ -129,6 +129,14 @@ const fnum_tbl = [768]u16{
 
 const init_instrument = [_]u8{ 0x01, 0x11, 0x4f, 0x00, 0xf1, 0xf2, 0x53, 0x74, 0x00, 0x00, 0x08 };
 
+const default_drum_patches = [_][payload_bytes]u8{
+    .{ 0x00, 0x00, 0x00, 0x00, 0xf8, 0xf8, 0x07, 0x07, 0x00, 0x00, 0x00 },
+    .{ 0x0c, 0x0c, 0x00, 0x00, 0xf8, 0xf8, 0x07, 0x07, 0x00, 0x01, 0x00 },
+    .{ 0x04, 0x04, 0x00, 0x00, 0xf8, 0xf8, 0x07, 0x07, 0x00, 0x00, 0x00 },
+    .{ 0x0c, 0x0c, 0x00, 0x00, 0xf8, 0xf8, 0x05, 0x05, 0x03, 0x03, 0x00 },
+    .{ 0x0e, 0x0e, 0x00, 0x00, 0xf8, 0xf8, 0x07, 0x07, 0x03, 0x03, 0x00 },
+};
+
 const default_patches = [_][payload_bytes]u8{
     .{ 0x21, 0x21, 0xd1, 0x07, 0xa3, 0xa4, 0x46, 0x25, 0x00, 0x00, 0x0a },
     .{ 0x22, 0x22, 0x0f, 0x0f, 0xf6, 0xf6, 0x95, 0x36, 0x00, 0x00, 0x0a },
@@ -184,6 +192,7 @@ const Instrument = extern struct {
 
 const MidiChannel = struct {
     patch: u8 = 0,
+    drum: u8 = 0xff,
     pitchbend: i16 = 8192,
     transpose: i16 = 0,
 };
@@ -247,6 +256,19 @@ const CmfSource = struct {
         if (self.instruments.len == 0) return Instrument.fromPayload(&default_patches[0]);
         const idx = patch % self.inst_count;
         return self.instruments[idx];
+    }
+
+    fn channelInstrument(self: *const CmfSource, ch: u8) Instrument {
+        const drum = self.midi[ch].drum;
+        if (drum < default_drum_patches.len) return Instrument.fromPayload(&default_drum_patches[drum]);
+        return self.instrument(self.midi[ch].patch);
+    }
+
+    fn assignDrumFallbacks(self: *CmfSource) void {
+        if (!self.midi_drums) return;
+        for (0..default_drum_patches.len) |i| {
+            self.midi[11 + i].drum = @intCast(i);
+        }
     }
 
     fn noteFreq(self: *const CmfSource, channel: u8, note: u8) struct { block: u8, fnum: u16 } {
@@ -344,7 +366,7 @@ const CmfSource = struct {
 
         if (ch > 10 and self.percussive) {
             const opl = percChannel(ch);
-            const ins = self.instrument(self.midi[ch].patch);
+            const ins = self.channelInstrument(ch);
             self.programPerc(chip, ch, ins);
             const level = velocityLevel(ins.carrier.scaling, velocity);
             var lvl_reg = Reg.level_base + op_offset[opl];
@@ -447,7 +469,11 @@ const CmfSource = struct {
             self.writeInitInstrument(chip, @intCast(i));
             self.voices[i] = .{};
         }
-        for (&self.midi) |*m| m.patch = 0;
+        for (&self.midi) |*m| {
+            m.patch = 0;
+            m.drum = 0xff;
+        }
+        if (enable) self.assignDrumFallbacks();
         self.write(chip, Reg.rhythm, if (enable) 0xe0 else 0xc0);
     }
 
@@ -459,8 +485,8 @@ const CmfSource = struct {
             const reg = Reg.key_block + @as(u16, @intCast(i));
             self.write(chip, reg, self.regs[reg] & ~Reg.key_on);
         }
-        self.rhythmMode(chip, self.midi_drums);
         self.midi = @splat(.{});
+        self.rhythmMode(chip, self.midi_drums);
         self.note_playing = @splat(255);
         self.note_fix = @splat(false);
     }
@@ -548,6 +574,7 @@ const CmfSource = struct {
                 const patch = self.readByte() orelse 0;
                 const wrapped: u8 = if (self.inst_count > 0) @intCast(patch % self.inst_count) else 0;
                 self.midi[channel].patch = wrapped;
+                self.midi[channel].drum = 0xff;
                 if (!self.percussive or channel < 11) {
                     const n = self.melodicVoiceCount();
                     for (0..n) |i| {
@@ -1049,4 +1076,43 @@ test "cmf loop rewind silences voices and resets channel state" {
         try std.testing.expect(state.regs[Reg.key_block + i] & Reg.key_on == 0);
     }
     try std.testing.expectEqual(@as(u8, 255), state.note_playing[0]);
+}
+
+test "cmf gm channel-9 bass drum uses the fallback percussion patch" {
+    const Rec = struct {
+        regs: [256]u8 = @splat(0),
+        fn write(ptr: *anyopaque, reg: u16, val: u8) void {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            if (reg < 256) self.regs[reg] = val;
+        }
+        fn flush(_: *anyopaque) void {}
+        fn chip(self: *@This()) fmt.Chip {
+            return .{
+                .ptr = self,
+                .vtable = &.{ .writeReg = write, .flush = flush },
+            };
+        }
+    };
+
+    const gpa = std.testing.allocator;
+    var buf: [128]u8 = undefined;
+    const music = [_]u8{
+        0x00, 0x99, 36,   64,
+        0x0a, 0xff, 0x2f, 0x00,
+    };
+    const data = makeMinimalCmf(&buf, &music);
+    var rec = Rec{};
+    const src = (try load(gpa, data, .{
+        .sample_rate = 44100,
+        .chip = rec.chip(),
+        .ext = ".cmf",
+        .name = "gm-drums.cmf",
+    })).?;
+    defer src.deinit(gpa);
+
+    const state: *CmfSource = @ptrCast(@alignCast(src.ptr));
+    try std.testing.expect(state.midi_drums);
+    _ = src.step(rec.chip());
+    try std.testing.expectEqual(@as(u8, 0x00), rec.regs[0x30]);
+    try std.testing.expectEqual(@as(u8, 0xf8), rec.regs[0x70]);
 }

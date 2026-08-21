@@ -99,7 +99,12 @@ classes:
 
 MIDI channels 11..15 are Creative rhythm channels when rhythm mode is on.
 Some GM conversions drive drums on channel 9 without program changes. Those
-files are detected at load time and remapped onto channels 11..15.
+files are detected at load time and remapped onto channels 11..15. AdPlug
+keeps five reserved percussion patches for that remap (bass, snare, tom,
+cymbal, hi-hat). sehnsucht loads the same fallbacks onto channels 11..15 when
+the detector fires. They live in a side table, not in the file-instrument
+number space, so a program change cannot select them by number. A later
+program change on those channels still uses the file bank.
 
 ## Decoding
 
@@ -135,9 +140,10 @@ frames = rescale(D, ticks_per_second, sample_rate)
 CMF always uses OPL2 and the stream visualizer. End of track rewinds the music
 pointer, silences every voice, restores the load-time rhythm mode, and clears
 patches, pitch bend, and transpose before reporting a song boundary, so a loop
-pass starts from the same state as the first. The file's opening delay is
-kept, including a zero delay. A mid-song rhythm toggle (`0x67`) keys off
-hanging notes before the melodic re-init.
+pass starts from the same state as the first. Detected GM drum fallbacks are
+reapplied with that restore. The file's opening delay is kept, including a
+zero delay. A mid-song rhythm toggle (`0x67`) keys off hanging notes before
+the melodic re-init.
 
 ## Metadata
 
@@ -157,3 +163,5 @@ Remarks are not exposed in the shell today.
 * Polyphonic key pressure and channel pressure are ignored.
 * Transpose applies a quarter of the controller value in 1/64-semitone steps,
   following AdPlug. Full deflection is just under half a semitone.
+* Channel-9 GM drum remap and the five fallback percussion patches follow
+  AdPlug, not SBFMDRV. Native rhythm channels 11..15 are unchanged.
