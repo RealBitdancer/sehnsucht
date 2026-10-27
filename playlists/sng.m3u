@@ -1,0 +1,10 @@
+#EXTM3U
+#PLAYLIST:SNGPlay
+# Remote SNGPlay set from Modland. Raw OPL2 streams (ObsM) from SNG Player
+# v1.0 by BUGSY of OBSESSiON. The two shipped demo rips, stored under Purple
+# Motion. That is the known public corpus.
+
+#EXTINF:-1,Purple Motion - Playmus1
+https://modland.com/pub/modules/Ad%20Lib/SNG%20Player/Purple%20Motion/playmus1.sng
+#EXTINF:-1,Purple Motion - Playmus2
+https://modland.com/pub/modules/Ad%20Lib/SNG%20Player/Purple%20Motion/playmus2.sng

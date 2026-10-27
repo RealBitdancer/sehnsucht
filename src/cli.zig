@@ -21,6 +21,7 @@ pub const ParsedArgs = struct {
     entries: []const []const u8 = &.{},
     titles: []const ?[]const u8 = &.{},
     rates: []const u32 = &.{},
+    themes: []const ?u8 = &.{},
     list_name: []const u8 = "",
     browse_dir: ?[]const u8 = null,
     was_playlist: bool = false,
@@ -123,7 +124,7 @@ pub fn parse(
         if (remote.isRemotePath(file_path)) {
             printStderr(io, build_options.name ++ ": fetching {s} ...\n", .{file_path});
         }
-        const raw = remote.readPathAlloc(gpa, io, file_path, null) catch |err| {
+        const raw = remote.readPathAlloc(gpa, io, file_path, null, null) catch |err| {
             printStderr(io, build_options.name ++ ": cannot read {s}: {s}\n", .{ file_path, loaderr.loadErrorLabel(err) });
             return done(1);
         };
@@ -138,6 +139,7 @@ pub fn parse(
         }
         result.titles = parsed.titles;
         result.rates = parsed.rates;
+        result.themes = parsed.themes;
         result.list_name = parsed.name orelse
             try format.dupeDisplayBasename(arena, file_path);
         result.entries = parsed.entries;
@@ -194,8 +196,7 @@ fn parseFlags(arena: std.mem.Allocator, args: []const []const u8) !FlagResult {
         } else if (std.mem.eql(u8, a, "--help") or std.mem.eql(u8, a, "-h")) {
             return .help;
         } else if (a.len > 1 and a[0] == '-') {
-            return .{ .fail = try std.fmt.allocPrint(
-                arena,
+            return .{ .fail = try arena.print(
                 build_options.name ++ ": unknown option {s} (try --help)",
                 .{a},
             ) };
@@ -207,12 +208,11 @@ fn parseFlags(arena: std.mem.Allocator, args: []const []const u8) !FlagResult {
 }
 
 fn badRate(arena: std.mem.Allocator, value: []const u8) ![]const u8 {
-    return std.fmt.allocPrint(arena, build_options.name ++ ": --rate must be 280, 560, or 700 (got {s})", .{value});
+    return arena.print(build_options.name ++ ": --rate must be 280, 560, or 700 (got {s})", .{value});
 }
 
 fn badTrack(arena: std.mem.Allocator, value: []const u8) ![]const u8 {
-    return std.fmt.allocPrint(
-        arena,
+    return arena.print(
         build_options.name ++ ": --track must be a track number counting from 1 (got {s})",
         .{value},
     );
@@ -220,7 +220,7 @@ fn badTrack(arena: std.mem.Allocator, value: []const u8) ![]const u8 {
 
 pub fn parseRateValue(value: []const u8) ?u32 {
     const hz = std.fmt.parseInt(u32, value, 10) catch return null;
-    if (std.mem.indexOfScalar(u32, &format.tick_rates, hz) == null) return null;
+    if (std.mem.findScalar(u32, &format.tick_rates, hz) == null) return null;
     return hz;
 }
 
@@ -259,7 +259,7 @@ fn reportUnsupportedPath(io: Io, path: []const u8) void {
 }
 
 fn tryOpenDir(io: Io, path: []const u8) ?Io.Dir {
-    if (std.fs.path.isAbsolute(path))
+    if (Io.Dir.path.isAbsolute(path))
         return Io.Dir.openDirAbsolute(io, path, .{}) catch null;
     return Io.Dir.cwd().openDir(io, path, .{}) catch null;
 }
@@ -290,23 +290,27 @@ const usage_text = "usage: " ++ build_options.name ++ " [options] [files... | pl
     \\playlist or directory must be the only argument. Wildcards
     \\are expanded by the shell, not the player.
     \\
-    \\formats: .hsc .rad .lds .ld0 .vgm .vgz .dro .raw .bam .xsm .cmf .imf .wlf .adlib
+    \\formats: .hsc .hsp .rad .a2m .a2t .lds .ld0 .vgm .vgz .dro .raw .rac .bam .jbm .xsm .cmf .imf .wlf .adlib .adl .got .sng .wm .m
+    \\         .rol .sci .snd .xmi (external instrument banks required)
     \\         AUDIOT.* / AUDIO.* / AUDIOHED.* (id Muse archives)
+    \\         SONG1..SONG4 / SONG21..SONG25 / SONG31..SONG36 / OPENSONG / WINSONG / BOSSSONG / MENU (God of Thunder)
     \\         .m3u / .m3u8 playlists of the above
     \\
     \\Files and playlists may also be http://, https://, or
     \\file:// URLs, on the command line and as playlist entries.
+    \\A path archive.zip/inner.ext is a zip member. The full URL
+    \\is tried first. A failed fetch unpacks the zip in memory.
     \\
     \\options:
     \\  --rate <hz>     force IMF/WLF/AudioT tick rate (280 / 560 / 700)
-    \\  --track <n>     AudioT music track number (counts from 1)
+    \\  --track <n>     AudioT / ADL / XMI track number (counts from 1)
     \\  -v, --version   print version and exit
     \\  -h, --help      show this help
     \\
     \\transport (always live, whatever holds focus):
     \\           Space pause  +/- volume  M mute
     \\           R cycle IMF/WLF/AudioT rate (280/560/700)
-    \\           , previous  . next track in an AudioT archive
+    \\           , previous  . next track in an AudioT, ADL, or XMI archive
     \\           [ previous  ] next playlist entry
     \\           S shuffle  L loop playlist
     \\
@@ -314,6 +318,7 @@ const usage_text = "usage: " ++ build_options.name ++ " [options] [files... | pl
     \\           F10/Alt menu focus, Tab/Shift+Tab switch views
     \\           B browse  P playlist  V visualizer
     \\           T themes  Q quit
+    \\           visualizer: I inspect  ` section  arrows scroll or pan
     \\           Alt+letter activates a menu item directly
     \\           lists: up/down  PgUp/PgDn  Home/End  Enter open
     \\           browse: right/Enter open  left/Backspace parent
@@ -334,20 +339,20 @@ test "usage text names the live key bindings" {
         want[1] = ' ';
         const n = @min(item.label.len, 5);
         for (item.label[0..n], 2..) |c, i| want[i] = std.ascii.toLower(c);
-        try std.testing.expect(std.mem.indexOf(u8, usage_text, want[0 .. 2 + n]) != null);
+        try std.testing.expect(std.mem.find(u8, usage_text, want[0 .. 2 + n]) != null);
     }
 
     // Every single-letter or punctuation key the transport block names
     // must really be a transport key, so the block cannot claim a key
     // the player gave to something else, as "T next track" once did.
-    const start = std.mem.indexOf(u8, usage_text, "transport").?;
-    const end = std.mem.indexOf(u8, usage_text, "in-player").?;
+    const start = std.mem.find(u8, usage_text, "transport").?;
+    const end = std.mem.find(u8, usage_text, "in-player").?;
     const block = usage_text[start..end];
     var it = std.mem.tokenizeAny(u8, block, " \n\\");
     while (it.next()) |tok| {
         if (tok.len != 1 or !std.ascii.isPrint(tok[0])) continue;
         const key = std.ascii.toLower(tok[0]);
-        try std.testing.expect(std.mem.indexOfScalar(u21, &ui.transport_keys, key) != null);
+        try std.testing.expect(std.mem.findScalar(u21, &ui.transport_keys, key) != null);
     }
 
     // And the reverse: each reserved transport key is documented in the
@@ -366,8 +371,8 @@ test "usage text names the live key bindings" {
         }
         try std.testing.expect(found);
     }
-    try std.testing.expect(std.mem.indexOf(u8, usage_text, "Space") != null);
-    try std.testing.expect(std.mem.indexOf(u8, usage_text, "+/- volume") != null);
+    try std.testing.expect(std.mem.find(u8, usage_text, "Space") != null);
+    try std.testing.expect(std.mem.find(u8, usage_text, "+/- volume") != null);
 }
 
 test "parseFlags collects options and positionals" {

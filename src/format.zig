@@ -5,6 +5,8 @@
 
 const std = @import("std");
 
+pub const view = @import("view.zig");
+
 pub const max_input_bytes: usize = 16 * 1024 * 1024;
 
 pub const tick_rates = [_]u32{ 280, 560, 700 };
@@ -16,7 +18,7 @@ pub const TrackInfo = struct {
     game: ?[]const u8 = null,
     system: ?[]const u8 = null,
     format_name: []const u8,
-    visualizer: []const u8,
+    visualizer: []const u8 = "",
     opl3: bool = false,
     loop: bool = false,
     rate_adjustable: bool = false,
@@ -29,44 +31,7 @@ pub const StepResult = struct {
     done: bool = false,
 };
 
-pub const TrackerPos = packed struct(u64) {
-    order_pos: u8 = 0,
-    row: u8 = 0,
-    pattern: u8 = 0,
-    speed: u8 = 0,
-    last_instrument: u8 = 0,
-    _reserved: u24 = 0,
-};
-
-pub const TrackerCell = struct {
-    pub const Kind = enum { empty, note, note_off, set_instrument, effect_only };
-    kind: Kind,
-    semitone: u8 = 0,
-    octave: u8 = 0,
-    arg: u8 = 0,
-};
-
-pub const OperatorParams = struct {
-    tremolo: bool,
-    vibrato: bool,
-    sustaining: bool,
-    ksr: bool,
-    mult: u4,
-    ksl: u2,
-    level: u6,
-    attack: u4,
-    decay: u4,
-    sustain: u4,
-    release: u4,
-    wave: u3,
-};
-
-pub const InstrumentInfo = struct {
-    modulator: OperatorParams,
-    carrier: OperatorParams,
-    feedback: u3,
-    additive: bool,
-};
+pub const OperatorParams = view.OperatorParams;
 
 pub fn operatorParams(char: u8, level: u8, ad: u8, sr: u8, wave: u8) OperatorParams {
     return .{
@@ -85,63 +50,110 @@ pub fn operatorParams(char: u8, level: u8, ad: u8, sr: u8, wave: u8) OperatorPar
     };
 }
 
-pub const TrackerView = struct {
-    ctx: *anyopaque,
-    channels: u8,
-    rows_per_pattern: u8,
-    num_patterns: u8,
-    order: []const u8,
-    cell: *const fn (ctx: *anyopaque, pattern: u8, row: u8, chan: u8) TrackerCell,
-    instrument: *const fn (ctx: *anyopaque, index: u8) InstrumentInfo,
-};
+pub const hsc_columns = [_]view.ColumnId{ .note, .effect };
+pub const hsc_cell_template = view.CellTemplate{ .width = 8, .note_w = 3, .fx_w = 2 };
 
 pub const MusicSource = struct {
     ptr: *anyopaque,
     vtable: *const VTable,
     /// Set by `load` for decoders that cannot derive a length from the file.
     duration_override: ?u64 = null,
+    visualizer: []const u8 = "",
 
-    pub fn init(ptr: anytype) MusicSource {
+    pub fn init(ptr: anytype, visualizer: []const u8) MusicSource {
         const pointer = @typeInfo(@TypeOf(ptr)).pointer;
         comptime {
-            if (pointer.size != .one or pointer.is_const) {
+            if (pointer.size != .one or pointer.attrs.@"const") {
                 @compileError("MusicSource.init requires a mutable single-item pointer");
             }
         }
         const T = pointer.child;
-        return .{ .ptr = ptr, .vtable = &SourceAdapter(T).vtable };
+        return .{ .ptr = ptr, .vtable = &SourceAdapter(T).vtable, .visualizer = visualizer };
     }
 
     pub const VTable = struct {
         step: *const fn (ptr: *anyopaque, chip: Chip) StepResult,
+        branch: ?*const fn (ptr: *anyopaque, label: u16, chip: Chip) bool = null,
+        renderPcm: ?*const fn (ptr: *anyopaque, stereo: []i32) void = null,
+        pcmState: ?*const fn (ptr: *anyopaque) view.PcmState = null,
         info: *const fn (ptr: *anyopaque) TrackInfo,
         deinit: *const fn (ptr: *anyopaque, gpa: std.mem.Allocator) void,
-        pos: ?*const fn (ptr: *anyopaque) TrackerPos = null,
-        trackerView: ?*const fn (ptr: *anyopaque) TrackerView = null,
+        patternView: ?*const fn (ptr: *anyopaque) view.PatternView = null,
+        orderView: ?*const fn (ptr: *anyopaque) view.OrderView = null,
+        instrumentBank: ?*const fn (ptr: *anyopaque) view.InstrumentBank = null,
+        sequenceView: ?*const fn (ptr: *anyopaque) view.SequenceView = null,
+        dumpView: ?*const fn (ptr: *anyopaque) view.DumpView = null,
+        playhead: ?*const fn (ptr: *anyopaque) view.Playhead = null,
+        sequenceState: ?*const fn (ptr: *anyopaque) view.SequenceStateBank = null,
+        channelState: ?*const fn (ptr: *anyopaque) view.ChannelStateBank = null,
+        patternCursors: ?*const fn (ptr: *anyopaque) view.PatternCursorBank = null,
         getTickRate: ?*const fn (ptr: *anyopaque) u32 = null,
         setTickRate: ?*const fn (ptr: *anyopaque, hz: u32) void = null,
         durationFrames: ?*const fn (ptr: *anyopaque) u64 = null,
+        selectArchiveTrack: ?*const fn (
+            ptr: *anyopaque,
+            gpa: std.mem.Allocator,
+            index: u32,
+            chip: Chip,
+        ) anyerror!void = null,
     };
 
     pub fn step(self: MusicSource, chip: Chip) StepResult {
         return self.vtable.step(self.ptr, chip);
     }
 
+    pub fn branch(self: MusicSource, label: u16, chip: Chip) bool {
+        const f = self.vtable.branch orelse return false;
+        return f(self.ptr, label, chip);
+    }
+
+    pub fn renderPcm(self: MusicSource, stereo: []i32) void {
+        @memset(stereo, 0);
+        if (self.vtable.renderPcm) |render| render(self.ptr, stereo);
+    }
+
+    pub fn pcmState(self: MusicSource) view.PcmState {
+        const get = self.vtable.pcmState orelse return .{};
+        return get(self.ptr);
+    }
+
+    pub fn patternCursors(self: MusicSource) view.PatternCursorBank {
+        const get = self.vtable.patternCursors orelse return .{};
+        return get(self.ptr);
+    }
+
     pub fn info(self: MusicSource) TrackInfo {
-        return self.vtable.info(self.ptr);
+        var track = self.vtable.info(self.ptr);
+        track.visualizer = self.visualizer;
+        return track;
     }
 
     pub fn deinit(self: MusicSource, gpa: std.mem.Allocator) void {
         self.vtable.deinit(self.ptr, gpa);
     }
 
-    pub fn pos(self: MusicSource) ?TrackerPos {
-        const f = self.vtable.pos orelse return null;
+    pub fn views(self: MusicSource) view.SourceViews {
+        return .{
+            .pattern = if (self.vtable.patternView) |f| f(self.ptr) else null,
+            .order = if (self.vtable.orderView) |f| f(self.ptr) else null,
+            .instruments = if (self.vtable.instrumentBank) |f| f(self.ptr) else null,
+            .sequence = if (self.vtable.sequenceView) |f| f(self.ptr) else null,
+            .dump = if (self.vtable.dumpView) |f| f(self.ptr) else null,
+        };
+    }
+
+    pub fn playhead(self: MusicSource) ?view.Playhead {
+        const f = self.vtable.playhead orelse return null;
         return f(self.ptr);
     }
 
-    pub fn trackerView(self: MusicSource) ?TrackerView {
-        const f = self.vtable.trackerView orelse return null;
+    pub fn sequenceState(self: MusicSource) ?view.SequenceStateBank {
+        const f = self.vtable.sequenceState orelse return null;
+        return f(self.ptr);
+    }
+
+    pub fn channelState(self: MusicSource) ?view.ChannelStateBank {
+        const f = self.vtable.channelState orelse return null;
         return f(self.ptr);
     }
 
@@ -162,10 +174,21 @@ pub const MusicSource = struct {
         return if (frames == 0) null else frames;
     }
 
+    pub fn selectArchiveTrack(
+        self: MusicSource,
+        gpa: std.mem.Allocator,
+        index: u32,
+        chip: Chip,
+    ) !bool {
+        const f = self.vtable.selectArchiveTrack orelse return false;
+        try f(self.ptr, gpa, index, chip);
+        return true;
+    }
+
     pub fn cycleTickRate(self: MusicSource) ?u32 {
         if (self.vtable.getTickRate == null or self.vtable.setTickRate == null) return null;
         const cur = self.getTickRate().?;
-        const idx = std.mem.indexOfScalar(u32, &tick_rates, cur) orelse 0;
+        const idx = std.mem.findScalar(u32, &tick_rates, cur) orelse 0;
         const next = tick_rates[(idx + 1) % tick_rates.len];
         self.setTickRate(next);
         return next;
@@ -187,6 +210,22 @@ fn SourceAdapter(comptime T: type) type {
             return T.step(cast(ptr), chip);
         }
 
+        fn branch(ptr: *anyopaque, label: u16, chip: Chip) bool {
+            return T.branch(cast(ptr), label, chip);
+        }
+
+        fn renderPcm(ptr: *anyopaque, stereo: []i32) void {
+            T.renderPcm(cast(ptr), stereo);
+        }
+
+        fn pcmState(ptr: *anyopaque) view.PcmState {
+            return T.pcmState(cast(ptr));
+        }
+
+        fn patternCursors(ptr: *anyopaque) view.PatternCursorBank {
+            return T.patternCursors(cast(ptr));
+        }
+
         fn info(ptr: *anyopaque) TrackInfo {
             return T.info(cast(ptr));
         }
@@ -195,12 +234,36 @@ fn SourceAdapter(comptime T: type) type {
             T.deinit(cast(ptr), gpa);
         }
 
-        fn pos(ptr: *anyopaque) TrackerPos {
-            return T.pos(cast(ptr));
+        fn patternView(ptr: *anyopaque) view.PatternView {
+            return T.patternView(cast(ptr));
         }
 
-        fn trackerView(ptr: *anyopaque) TrackerView {
-            return T.trackerView(cast(ptr));
+        fn orderView(ptr: *anyopaque) view.OrderView {
+            return T.orderView(cast(ptr));
+        }
+
+        fn instrumentBank(ptr: *anyopaque) view.InstrumentBank {
+            return T.instrumentBank(cast(ptr));
+        }
+
+        fn sequenceView(ptr: *anyopaque) view.SequenceView {
+            return T.sequenceView(cast(ptr));
+        }
+
+        fn dumpView(ptr: *anyopaque) view.DumpView {
+            return T.dumpView(cast(ptr));
+        }
+
+        fn playheadFn(ptr: *anyopaque) view.Playhead {
+            return T.playhead(cast(ptr));
+        }
+
+        fn sequenceStateFn(ptr: *anyopaque) view.SequenceStateBank {
+            return T.sequenceState(cast(ptr));
+        }
+
+        fn channelStateFn(ptr: *anyopaque) view.ChannelStateBank {
+            return T.channelState(cast(ptr));
         }
 
         fn getTickRate(ptr: *anyopaque) u32 {
@@ -215,15 +278,35 @@ fn SourceAdapter(comptime T: type) type {
             return T.durationFrames(cast(ptr));
         }
 
+        fn selectArchiveTrack(
+            ptr: *anyopaque,
+            gpa: std.mem.Allocator,
+            index: u32,
+            chip: Chip,
+        ) anyerror!void {
+            return T.selectArchiveTrack(cast(ptr), gpa, index, chip);
+        }
+
         const vtable = MusicSource.VTable{
             .step = step,
+            .branch = if (@hasDecl(T, "branch")) branch else null,
+            .renderPcm = if (@hasDecl(T, "renderPcm")) renderPcm else null,
+            .pcmState = if (@hasDecl(T, "pcmState")) pcmState else null,
+            .patternCursors = if (@hasDecl(T, "patternCursors")) patternCursors else null,
             .info = info,
             .deinit = deinit,
-            .pos = if (@hasDecl(T, "pos")) pos else null,
-            .trackerView = if (@hasDecl(T, "trackerView")) trackerView else null,
+            .patternView = if (@hasDecl(T, "patternView")) patternView else null,
+            .orderView = if (@hasDecl(T, "orderView")) orderView else null,
+            .instrumentBank = if (@hasDecl(T, "instrumentBank")) instrumentBank else null,
+            .sequenceView = if (@hasDecl(T, "sequenceView")) sequenceView else null,
+            .dumpView = if (@hasDecl(T, "dumpView")) dumpView else null,
+            .playhead = if (@hasDecl(T, "playhead")) playheadFn else null,
+            .sequenceState = if (@hasDecl(T, "sequenceState")) sequenceStateFn else null,
+            .channelState = if (@hasDecl(T, "channelState")) channelStateFn else null,
             .getTickRate = if (@hasDecl(T, "getTickRate")) getTickRate else null,
             .setTickRate = if (@hasDecl(T, "setTickRate")) setTickRate else null,
             .durationFrames = if (@hasDecl(T, "durationFrames")) durationFrames else null,
+            .selectArchiveTrack = if (@hasDecl(T, "selectArchiveTrack")) selectArchiveTrack else null,
         };
     };
 }
@@ -235,6 +318,7 @@ pub const Chip = struct {
     pub const VTable = struct {
         writeReg: *const fn (ptr: *anyopaque, reg: u16, val: u8) void,
         flush: *const fn (ptr: *anyopaque) void,
+        traceReg: ?*const fn (ptr: *anyopaque, reg: u16, val: u8) void = null,
     };
 
     pub fn writeReg(self: Chip, reg: u16, val: u8) void {
@@ -243,6 +327,10 @@ pub const Chip = struct {
 
     pub fn flush(self: Chip) void {
         self.vtable.flush(self.ptr);
+    }
+
+    pub fn traceReg(self: Chip, reg: u16, val: u8) void {
+        if (self.vtable.traceReg) |trace| trace(self.ptr, reg, val);
     }
 };
 
@@ -257,11 +345,60 @@ pub const noop_chip = Chip{ .ptr = &noop_chip_ctx, .vtable = &noop_chip_vtable }
 
 /// Companion file bytes gathered by the loader before `load` runs.
 /// `sibling_is_alt` reports that the primary companion was missing and the
-/// bytes in `sibling` came from `sibling_alt_path` instead.
+/// bytes in `sibling` came from `CompanionPaths.sibling_alt` instead.
 pub const Companions = struct {
     sibling: ?[]const u8 = null,
     sibling2: ?[]const u8 = null,
     sibling_is_alt: bool = false,
+    resources: []const Resource = &.{},
+};
+
+pub const Resource = struct {
+    name: []const u8,
+    data: []const u8,
+};
+
+pub const ResourceRequest = struct {
+    name: []const u8,
+    paths: [][]u8,
+    required: bool = true,
+
+    pub fn init(gpa: std.mem.Allocator, path: []const u8, name: []const u8, candidates: []const []const u8) !ResourceRequest {
+        var paths: std.ArrayList([]u8) = .empty;
+        errdefer {
+            for (paths.items) |p| gpa.free(p);
+            paths.deinit(gpa);
+        }
+        for (candidates) |candidate| {
+            const joined = try joinDir(gpa, dirnameOf(path), candidate);
+            errdefer gpa.free(joined);
+            try paths.append(gpa, joined);
+        }
+        const owned_name = try gpa.dupe(u8, name);
+        errdefer gpa.free(owned_name);
+        return .{ .name = owned_name, .paths = try paths.toOwnedSlice(gpa) };
+    }
+
+    pub fn deinit(self: ResourceRequest, gpa: std.mem.Allocator) void {
+        gpa.free(self.name);
+        for (self.paths) |path| gpa.free(path);
+        gpa.free(self.paths);
+    }
+};
+
+/// Paths a format wants fetched alongside the main file. One resolver returns
+/// this struct, so a later archive format can fill the slots it needs without
+/// new `Format` function-pointer fields.
+pub const CompanionPaths = struct {
+    sibling: ?[]u8 = null,
+    sibling_alt: ?[]u8 = null,
+    sibling2: ?[]u8 = null,
+
+    pub fn deinit(self: CompanionPaths, gpa: std.mem.Allocator) void {
+        if (self.sibling) |s| gpa.free(s);
+        if (self.sibling_alt) |s| gpa.free(s);
+        if (self.sibling2) |s| gpa.free(s);
+    }
 };
 
 pub const LoadContext = struct {
@@ -274,22 +411,23 @@ pub const LoadContext = struct {
     sibling_is_alt: bool = false,
     ext: []const u8 = "",
     name: []const u8 = "",
+    resources: []const Resource = &.{},
+
+    pub fn resource(self: LoadContext, name: []const u8) ?[]const u8 {
+        for (self.resources) |res| if (std.mem.eql(u8, res.name, name)) return res.data;
+        return null;
+    }
 };
 
 pub const Format = struct {
     name: []const u8,
     extensions: []const []const u8,
     visualizer: []const u8,
+    view_caps: view.ViewCaps = .{},
     matches_path: ?*const fn (path: []const u8) bool = null,
     label_for_path: ?*const fn (path: []const u8) []const u8 = null,
-    sibling_path: ?*const fn (gpa: std.mem.Allocator, path: []const u8) anyerror!?[]u8 = null,
-    /// Fallback for `sibling_path`: fetched when the primary companion cannot
-    /// be read. `LoadContext.sibling_is_alt` tells the decoder which one won.
-    sibling_alt_path: ?*const fn (gpa: std.mem.Allocator, path: []const u8) anyerror!?[]u8 = null,
-    /// A second companion resolved the same way, for formats that need two
-    /// side files. Read tolerantly: absence reaches `load` as a null
-    /// `LoadContext.sibling2`, and the decoder decides whether that is fatal.
-    sibling2_path: ?*const fn (gpa: std.mem.Allocator, path: []const u8) anyerror!?[]u8 = null,
+    companions: ?*const fn (gpa: std.mem.Allocator, path: []const u8) anyerror!CompanionPaths = null,
+    resource_requests: ?*const fn (gpa: std.mem.Allocator, path: []const u8, data: []const u8) anyerror![]ResourceRequest = null,
     /// Input and context slices are borrowed for the call. Return null to
     /// decline the input, an error after claiming it, or an owned source.
     load: *const fn (
@@ -297,13 +435,34 @@ pub const Format = struct {
         data: []const u8,
         ctx: LoadContext,
     ) anyerror!?MusicSource,
+
+    pub fn init(comptime T: type) Format {
+        comptime {
+            if (!@hasDecl(T, "format_name")) @compileError(@typeName(T) ++ " must provide format_name");
+            if (!@hasDecl(T, "extensions")) @compileError(@typeName(T) ++ " must provide extensions");
+            if (!@hasDecl(T, "visualizer_name")) @compileError(@typeName(T) ++ " must provide visualizer_name");
+            if (!@hasDecl(T, "view_caps")) @compileError(@typeName(T) ++ " must provide view_caps");
+            if (!@hasDecl(T, "load")) @compileError(@typeName(T) ++ " must provide load");
+        }
+        return .{
+            .name = T.format_name,
+            .extensions = T.extensions,
+            .visualizer = T.visualizer_name,
+            .view_caps = T.view_caps,
+            .matches_path = if (@hasDecl(T, "matchesPath")) T.matchesPath else null,
+            .label_for_path = if (@hasDecl(T, "labelForPath")) T.labelForPath else null,
+            .companions = if (@hasDecl(T, "companions")) T.companions else null,
+            .resource_requests = if (@hasDecl(T, "resourceRequests")) T.resourceRequests else null,
+            .load = T.load,
+        };
+    }
 };
 
 pub const formats = @import("registry.zig").formats;
 
 pub fn extensionOf(path: []const u8) []const u8 {
     const base = basenameOf(path);
-    const dot = std.mem.lastIndexOfScalar(u8, base, '.') orelse return base[base.len..];
+    const dot = std.mem.findScalarLast(u8, base, '.') orelse return base[base.len..];
     return base[dot..];
 }
 
@@ -323,7 +482,7 @@ inline fn claims(f: Format, path: []const u8) bool {
 /// These helpers also run on URLs and on playlist entries authored
 /// on another OS, so both `/` and `\` must separate components
 /// no matter what the host filesystem thinks.
-pub const basenameOf = std.fs.path.basenameWindows;
+pub const basenameOf = std.Io.Dir.path.basenameWindows;
 
 pub fn stemOf(name: []const u8) []const u8 {
     const ext = extensionOf(name);
@@ -332,7 +491,7 @@ pub fn stemOf(name: []const u8) []const u8 {
 }
 
 pub fn dirnameOf(path: []const u8) []const u8 {
-    return std.fs.path.dirnameWindows(path) orelse ".";
+    return std.Io.Dir.path.dirnameWindows(path) orelse ".";
 }
 
 pub fn isWindowsDriveRoot(path: []const u8) bool {
@@ -344,14 +503,14 @@ pub fn isWindowsDriveRoot(path: []const u8) bool {
 
 pub fn joinDir(gpa: std.mem.Allocator, dir: []const u8, name: []const u8) ![]u8 {
     if (dir.len == 0 or (dir.len == 1 and dir[0] == '.')) return try gpa.dupe(u8, name);
-    const sep: u8 = if (std.mem.indexOfScalar(u8, dir, '\\') != null or (dir.len >= 2 and dir[1] == ':'))
+    const sep: u8 = if (std.mem.findScalar(u8, dir, '\\') != null or (dir.len >= 2 and dir[1] == ':'))
         '\\'
     else
         '/';
     if (dir[dir.len - 1] == '/' or dir[dir.len - 1] == '\\') {
-        return try std.fmt.allocPrint(gpa, "{s}{s}", .{ dir, name });
+        return try gpa.print("{s}{s}", .{ dir, name });
     }
-    return try std.fmt.allocPrint(gpa, "{s}{c}{s}", .{ dir, sep, name });
+    return try gpa.print("{s}{c}{s}", .{ dir, sep, name });
 }
 
 pub fn dupeDisplayBasename(gpa: std.mem.Allocator, path: []const u8) ![]u8 {
@@ -384,7 +543,7 @@ const measure_stall_cap: u32 = 1 << 20;
 // Overrunning it costs only the progress bar, never the track.
 const measure_step_cap: u32 = 1 << 22;
 
-fn measureByStepping(src: MusicSource, chip: Chip, sample_rate: u32) ?u64 {
+pub fn measureByStepping(src: MusicSource, chip: Chip, sample_rate: u32) ?u64 {
     const frame_cap: u64 = @as(u64, sample_rate) * measure_frame_cap_secs;
     var frames: u64 = 0;
     var stall: u32 = 0;
@@ -418,7 +577,7 @@ pub fn load(
         var fctx = ctx;
         fctx.ext = extensionOf(path);
         fctx.name = basenameOf(path);
-        const src = (try f.load(gpa, data, fctx)) orelse continue;
+        var src = (try f.load(gpa, data, fctx)) orelse continue;
         errdefer src.deinit(gpa);
         if (src.durationFrames() != null) return src;
 
@@ -443,17 +602,32 @@ pub fn isPlayablePath(path: []const u8) bool {
     return false;
 }
 
-pub fn companionPath(
-    comptime field: []const u8,
-    gpa: std.mem.Allocator,
-    path: []const u8,
-) !?[]u8 {
+pub fn resolveCompanions(gpa: std.mem.Allocator, path: []const u8) !CompanionPaths {
     for (formats) |f| {
         if (!claims(f, path)) continue;
-        const resolve = @field(f, field) orelse return null;
+        const resolve = f.companions orelse return .{};
         return resolve(gpa, path);
     }
-    return null;
+    return .{};
+}
+
+pub fn resourceRequests(gpa: std.mem.Allocator, path: []const u8, data: []const u8) ![]ResourceRequest {
+    var requests: std.ArrayList(ResourceRequest) = .empty;
+    errdefer {
+        for (requests.items) |request| request.deinit(gpa);
+        requests.deinit(gpa);
+    }
+    for (formats) |f| {
+        if (!claims(f, path)) continue;
+        const discover = f.resource_requests orelse continue;
+        const found = try discover(gpa, path, data);
+        defer gpa.free(found);
+        requests.appendSlice(gpa, found) catch |err| {
+            for (found) |request| request.deinit(gpa);
+            return err;
+        };
+    }
+    return requests.toOwnedSlice(gpa);
 }
 
 pub fn displayLabelForPath(path: []const u8) ?[]const u8 {
@@ -472,17 +646,50 @@ pub const DrainResult = struct {
 };
 
 pub fn testDrain(src: MusicSource, chip: Chip, max_steps: usize) DrainResult {
+    const Counting = struct {
+        inner: Chip,
+        writes: usize = 0,
+
+        fn writeReg(ptr: *anyopaque, reg: u16, val: u8) void {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            self.writes += 1;
+            self.inner.writeReg(reg, val);
+        }
+
+        fn flush(ptr: *anyopaque) void {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            self.inner.flush();
+        }
+
+        fn traceReg(ptr: *anyopaque, reg: u16, val: u8) void {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            self.inner.traceReg(reg, val);
+        }
+    };
+    var counting: Counting = .{ .inner = chip };
+    const counted: Chip = .{ .ptr = &counting, .vtable = &.{ .writeReg = Counting.writeReg, .flush = Counting.flush, .traceReg = Counting.traceReg } };
     var out = DrainResult{};
     var steps: usize = 0;
     while (!out.done and steps < max_steps) : (steps += 1) {
-        const r = src.step(chip);
+        const r = src.step(counted);
         out.done = r.done;
-        if (r.frames == 0 and !out.done) out.writes += 1 else out.frames += r.frames;
+        out.frames += r.frames;
     }
+    out.writes = counting.writes;
     return out;
 }
 
 // --- tests -------------------------------------------------------------------
+
+test "companions belong to the first format that claims a path" {
+    const gpa = std.testing.allocator;
+    const paths = try resolveCompanions(gpa, "AUDIO.RAD");
+    defer paths.deinit(gpa);
+    try std.testing.expect(paths.sibling == null and paths.sibling2 == null);
+    const audiot = try resolveCompanions(gpa, "AUDIOT.WL6");
+    defer audiot.deinit(gpa);
+    try std.testing.expect(audiot.sibling != null);
+}
 
 const PathCase = struct {
     path: []const u8,

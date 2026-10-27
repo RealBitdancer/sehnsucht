@@ -52,7 +52,7 @@ fn isRootPath(path: []const u8) bool {
 }
 
 fn canEnterDrivesView(path: []const u8) bool {
-    return builtin.os.tag == .windows and format.isWindowsDriveRoot(path);
+    return builtin.target.os.tag == .windows and format.isWindowsDriveRoot(path);
 }
 
 fn driveRootLabel(letter: u8) [3]u8 {
@@ -167,6 +167,7 @@ pub const State = struct {
     }
 
     pub fn draw(self: *State, win: vaxis.Window, theme: Theme) void {
+        self.nav.key_hits = .{};
         const list_top: u16 = 3;
         const with_bar = win.height >= list_top + paint.key_bar_height + 1;
         const bar_h: u16 = if (with_bar) paint.key_bar_height else 0;
@@ -215,10 +216,9 @@ pub const State = struct {
         self.nav.hit_y0 = @as(u16, @intCast(@max(0, win.y_off))) + list_top;
         self.nav.hit_rows = @intCast(@min(@as(usize, list_h), n - first));
 
-        const focus_bg = theme.colors.list_cursor_bg;
-        const focus_fg = theme.colors.list_cursor_fg;
-        const canvas = theme.colors.bg;
-        const dir_fg = theme.colors.browse_dir_fg;
+        const cursor_style = theme.style(.list_cursor);
+        const row_style = theme.style(.list_row);
+        const dir_style = theme.style(.browse_dir);
         const type_x: u16 = 1;
         const name_x: u16 = 8;
 
@@ -227,16 +227,14 @@ pub const State = struct {
             const y = list_top + row;
             const idx = first + row;
             if (idx >= n) {
-                paint.fillRowBg(win, y, 0, win.width, canvas);
+                paint.fillRowBg(win, y, 0, win.width, row_style.bg);
                 continue;
             }
             const e = self.entries[idx];
             const is_cursor = idx == cursor;
-            const bg = if (is_cursor) focus_bg else canvas;
-            const fg = if (is_cursor) focus_fg else theme.colors.list_row_fg;
-            const name_style = theme.listEntry(fg, bg, is_cursor);
+            const name_style = if (is_cursor) cursor_style else row_style;
 
-            paint.fillRowBg(win, y, 0, row_w, bg);
+            paint.fillRowBg(win, y, 0, row_w, name_style.bg);
 
             const type_label: ?[]const u8 = switch (e.kind) {
                 .dir => "<DIR>",
@@ -249,7 +247,7 @@ pub const State = struct {
                     type_x,
                     y,
                     label,
-                    theme.listEntry(if (is_cursor) focus_fg else dir_fg, bg, is_cursor),
+                    if (is_cursor) cursor_style else dir_style,
                 );
             }
 
@@ -268,17 +266,17 @@ pub const State = struct {
         return !isRootPath(self.path);
     }
 
-    fn drawKeyBar(self: *const State, win: vaxis.Window, theme: Theme) void {
+    fn drawKeyBar(self: *State, win: vaxis.Window, theme: Theme) void {
         const n = self.entries.len;
         const can_open = n > 0;
         const can_parent = self.canParent();
         const hints = paint.listNavigationHints(n, self.nav.cursor) ++ [_]paint.Hotkey{
-            .{ .key = "Enter", .label = "", .enabled = can_open },
-            .{ .key = "→", .label = "open", .enabled = can_open, .glue = true },
-            .{ .key = "Bksp", .label = "", .enabled = can_parent },
-            .{ .key = "←", .label = "parent", .enabled = can_parent, .glue = true },
+            .{ .key = "Enter", .codepoint = vaxis.Key.enter, .label = "", .enabled = can_open },
+            .{ .key = "→", .codepoint = vaxis.Key.right, .label = "open", .enabled = can_open, .glue = true },
+            .{ .key = "Bksp", .codepoint = vaxis.Key.backspace, .label = "", .enabled = can_parent },
+            .{ .key = "←", .codepoint = vaxis.Key.left, .label = "parent", .enabled = can_parent, .glue = true },
         };
-        paint.drawListKeyBar(win, theme, &hints);
+        paint.drawListKeyBar(win, theme, &hints, &self.nav.key_hits);
     }
 
     fn clearEntries(self: *State) void {
@@ -294,7 +292,7 @@ pub const State = struct {
     fn normalizePath(self: *State) !void {
         const p = self.path;
         if (p.len == 2 and p[1] == ':' and std.ascii.isAlphabetic(p[0])) {
-            const rooted = try std.fmt.allocPrint(self.gpa, "{c}:\\", .{p[0]});
+            const rooted = try self.gpa.print("{c}:\\", .{p[0]});
             self.gpa.free(self.path);
             self.path = rooted;
         }
@@ -302,7 +300,7 @@ pub const State = struct {
 
     fn openDir(self: *State, io: Io) !Io.Dir {
         try self.normalizePath();
-        if (std.fs.path.isAbsolute(self.path)) {
+        if (Io.Dir.path.isAbsolute(self.path)) {
             return Io.Dir.openDirAbsolute(io, self.path, .{ .iterate = true });
         }
         return Io.Dir.cwd().openDir(io, self.path, .{ .iterate = true });
@@ -451,7 +449,7 @@ pub const State = struct {
 };
 
 fn appendLogicalDrives(gpa: std.mem.Allocator, list: *std.ArrayList(Entry)) !void {
-    if (builtin.os.tag != .windows) return;
+    if (builtin.target.os.tag != .windows) return;
 
     const kernel32 = struct {
         extern "kernel32" fn GetLogicalDrives() callconv(.winapi) std.os.windows.DWORD;
@@ -496,7 +494,7 @@ test "parent is available on windows drive roots only" {
     var state: State = .{ .gpa = std.testing.allocator, .path = try std.testing.allocator.dupe(u8, "C:\\") };
     defer state.deinit();
 
-    if (builtin.os.tag == .windows) {
+    if (builtin.target.os.tag == .windows) {
         try std.testing.expect(canEnterDrivesView(state.path));
         try std.testing.expect(state.canParent());
     } else {
@@ -520,7 +518,7 @@ test "parent is available on windows drive roots only" {
 }
 
 test "goParent from windows drive root opens drives view" {
-    if (builtin.os.tag != .windows) return;
+    if (builtin.target.os.tag != .windows) return;
 
     var state: State = .{ .gpa = std.testing.allocator };
     defer state.deinit();
@@ -551,7 +549,7 @@ test "selection restore matches names exactly" {
 }
 
 test "an empty drives list is an error, not a dead end" {
-    if (builtin.os.tag == .windows) return;
+    if (builtin.target.os.tag == .windows) return;
     var state: State = .{ .gpa = std.testing.allocator };
     defer state.deinit();
     state.drives_view = true;

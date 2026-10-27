@@ -23,8 +23,10 @@ External reference:
 2. Bytes 0..3 are `CTMF`.
 3. Version word at offset 4 is `0x0100` (v1.0) or `0x0101` (v1.1).
 
-Wrong magic or version declines the file. A truncated header or bad offsets
-after a recognized magic and version return `error.InvalidCmf`.
+Wrong magic or version declines the file. MacsOpera also uses `.cmf` and is
+a separate, unimplemented format. Those files lack `CTMF` and are not
+claimed here. A truncated header or bad offsets after a recognized magic
+and version return `error.InvalidCmf`.
 
 ## File layout
 
@@ -137,7 +139,14 @@ frames = rescale(D, ticks_per_second, sample_rate)
 
 ## Playback
 
-CMF always uses OPL2 and the stream visualizer. End of track rewinds the music
+CMF uses OPL2 and the sequence visualizer. The grid shows a tick window over
+the MIDI stream, including notes, programs, controllers, pitch bend, and
+aftertouch. Tempo metadata and SysEx appear in FLOW. Unused channels from the
+in-use table are dimmed. The mixer and spectrum combine active voices by
+logical MIDI channel. Chords retain their simultaneous notes, and percussion
+voices remain distinct even when they share a physical OPL channel.
+
+End of track rewinds the music
 pointer, silences every voice, restores the load-time rhythm mode, and clears
 patches, pitch bend, and transpose before reporting a song boundary, so a loop
 pass starts from the same state as the first. Detected GM drum fallbacks are
@@ -157,11 +166,3 @@ Remarks are not exposed in the shell today.
 | Wrong magic or version | Decline (`null`) |
 | Truncated header | `error.InvalidCmf` |
 | Bad instrument or music offsets | `error.InvalidCmf` |
-
-## Compatibility notes
-
-* Polyphonic key pressure and channel pressure are ignored.
-* Transpose applies a quarter of the controller value in 1/64-semitone steps,
-  following AdPlug. Full deflection is just under half a semitone.
-* Channel-9 GM drum remap and the five fallback percussion patches follow
-  AdPlug, not SBFMDRV. Native rhythm channels 11..15 are unchanged.

@@ -56,6 +56,7 @@ pub fn main(init: std.process.Init) !u8 {
         .entries = entries,
         .titles = args.titles,
         .rates = args.rates,
+        .themes = args.themes,
         .name = args.list_name,
         .tick_rate_hz = args.options.tick_rate_hz,
         .track_index = args.options.track_index,
@@ -133,7 +134,7 @@ fn runUi(
 
     var loop: vaxis.Loop(Event) = .init(io, &tty, &vx);
     try loop.start();
-    defer stopLoop(&loop, &tty, io);
+    defer loop.stop();
 
     try enterAltScreen(&vx, &tty);
     try vx.setTitle(tty.writer(), build_options.name);
@@ -159,6 +160,7 @@ fn runUi(
         .startup_show_playlist = start.show_playlist,
         .startup_errors = startup_errors,
     };
+    loader.state.cache = &loader.zip_cache;
     var fetch_fut = try io.concurrent(Loader.fetchWorker, .{ gpa, io, &loader.state });
     defer {
         loader.shutdown();
@@ -265,6 +267,12 @@ fn applyUiAction(
                 model.playlist_list.pending_jump = null;
                 try loader.request(player, model, .jump, idx, .next);
             }
+            if (model.pending_seek) |frames| {
+                model.pending_seek = null;
+                if (!loader.busy()) {
+                    if (try player.seek(frames)) |src| model.replaceSource(src);
+                }
+            }
             const at_songend = player.multi() and !player.isDetached() and
                 !loader.busy() and bridge.loop_count.load(.acquire) > 0;
             if (at_songend) {
@@ -276,8 +284,29 @@ fn applyUiAction(
         .archive_prev, .archive_next => {
             const count = @max(1, model.track.archive_track_count);
             const step = if (action == .archive_next) 1 else count - 1;
-            player.track_index = (model.track.archive_track_index + step) % count;
-            try requestReplay(gpa, loader, player, model);
+            const from = @min(loader.pendingArchiveIndex(player) orelse player.track_index, count - 1);
+            const next = (from + step) % count;
+            if (!loader.busy()) {
+                if (try player.retargetArchiveTrack(next)) {
+                    const src = player.src.?;
+                    const track = src.info();
+                    try model.setTrack(.{
+                        .info = track,
+                        .filename = track.title orelse model.filename,
+                        .views = src.views(),
+                        .source = src,
+                        .system = model.system,
+                    });
+                } else {
+                    const saved = player.track_index;
+                    player.track_index = next;
+                    errdefer player.track_index = saved;
+                    try requestReplay(gpa, loader, player, model);
+                    player.track_index = saved;
+                }
+            } else {
+                _ = loader.adoptArchiveIndex(player, next);
+            }
         },
         .replay => try requestReplay(gpa, loader, player, model),
         .next, .prev => {
@@ -337,7 +366,7 @@ fn openBrowsePlaylist(
     model: *ui.Model,
     path: []const u8,
 ) !void {
-    const raw = remote.readPathAlloc(gpa, io, path, null) catch |err| {
+    const raw = remote.readPathAlloc(gpa, io, path, null, &loader.zip_cache) catch |err| {
         if (err == error.OutOfMemory) return error.OutOfMemory;
         model.browse.err_msg = "cannot read playlist";
         return;
@@ -362,7 +391,7 @@ fn openBrowsePlaylist(
     defer gpa.free(fallback_name);
     const list_name = parsed.name orelse
         fallback_name;
-    player.replaceEntries(parsed.entries, parsed.titles, parsed.rates, list_name) catch |err| {
+    player.replaceEntries(parsed.entries, parsed.titles, parsed.rates, parsed.themes, list_name) catch |err| {
         if (err == error.OutOfMemory) return error.OutOfMemory;
         model.browse.err_msg = "cannot load playlist";
         return;
@@ -390,22 +419,11 @@ fn handleUiEvent(
     action: *Action,
 ) !void {
     switch (event) {
-        .key_press => |key| {
-            if (key.codepoint == 'c' and key.mods.ctrl) {
-                bridge.quit.store(true, .release);
-                action.* = .quit;
-                return;
-            }
-            if (try handlePlaylistKey(bridge, model, player, key, action)) return;
-            if (model.handleKey(key) == .quit) {
-                action.* = .quit;
-            }
-            if (key.codepoint == 'r' or key.codepoint == 'R') persistLiveRate(player, model);
-        },
-        .mouse => |mouse| {
-            if (model.handleMouse(mouse) == .quit) {
-                action.* = .quit;
-            }
+        .key_press => |key| try handleKeyPress(bridge, model, player, key, action),
+        .mouse => |mouse| switch (model.handleMouse(mouse)) {
+            .key => |key| try handleKeyPress(bridge, model, player, key, action),
+            .quit => action.* = .quit,
+            .handled => {},
         },
         .winsize => |ws| {
             vx.resize(gpa, writer, ws) catch {};
@@ -414,6 +432,17 @@ fn handleUiEvent(
             model.sampleVisuals();
         },
     }
+}
+
+fn handleKeyPress(bridge: *Bridge, model: *ui.Model, player: *Player, key: vaxis.Key, action: *Action) !void {
+    if (key.codepoint == 'c' and key.mods.ctrl) {
+        bridge.quit.store(true, .release);
+        action.* = .quit;
+        return;
+    }
+    if (try handlePlaylistKey(bridge, model, player, key, action)) return;
+    if (model.handleKey(key) == .quit) action.* = .quit;
+    if (key.codepoint == 'r' or key.codepoint == 'R') persistLiveRate(player, model);
 }
 
 /// The playlist half of the status frame's transport row (`[`, `]`, `S`, `L`,
@@ -466,52 +495,9 @@ fn tickPoster(loop: *vaxis.Loop(Event), running: *std.atomic.Value(bool), io: Io
     }
 }
 
-const winconsole = if (builtin.os.tag == .windows) struct {
-    extern "kernel32" fn WriteConsoleInputW(
-        hConsoleInput: std.os.windows.HANDLE,
-        lpBuffer: *const vaxis.Tty.INPUT_RECORD,
-        nLength: std.os.windows.DWORD,
-        lpNumberOfEventsWritten: *std.os.windows.DWORD,
-    ) callconv(.winapi) std.os.windows.BOOL;
-    extern "kernel32" fn FlushConsoleInputBuffer(
-        hConsoleInput: std.os.windows.HANDLE,
-    ) callconv(.winapi) std.os.windows.BOOL;
-} else struct {};
-
-/// vaxis Loop.stop unblocks its reader with a DSR write (\x1b[5n). On Windows
-/// the reply (\x1b[0n) often arrives after alt-screen restore and is left as
-/// ^[[0n on the shell prompt. Unblock with a synthetic key and join the
-/// reader thread without sending the DSR.
-fn stopLoop(loop: *vaxis.Loop(Event), tty: *vaxis.Tty, io: Io) void {
-    if (builtin.os.tag == .windows) {
-        loop.should_quit = true;
-        var rec: vaxis.Tty.INPUT_RECORD = .{
-            .EventType = 0x0001,
-            .Event = .{ .KeyEvent = .{
-                .bKeyDown = .TRUE,
-                .wRepeatCount = 1,
-                .wVirtualKeyCode = 'Q',
-                .wVirtualScanCode = 0,
-                .uChar = .{ .UnicodeChar = 'q' },
-                .dwControlKeyState = 0,
-            } },
-        };
-        var written: std.os.windows.DWORD = 0;
-        _ = winconsole.WriteConsoleInputW(tty.stdin, &rec, 1, &written);
-        if (loop.thread) |*thread| {
-            thread.await(io);
-            loop.thread = null;
-        }
-        loop.should_quit = false;
-        _ = winconsole.FlushConsoleInputBuffer(tty.stdin);
-    } else {
-        loop.stop();
-    }
-}
-
 fn enterAltScreen(vx: *vaxis.Vaxis, tty: *vaxis.Tty) !void {
     try vx.enterAltScreen(tty.writer());
-    if (builtin.os.tag == .windows) {
+    if (builtin.target.os.tag == .windows) {
         vx.queries_done.store(true, .unordered);
         try vx.enableDetectedFeatures(tty.writer());
     } else {

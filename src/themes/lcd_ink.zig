@@ -153,6 +153,27 @@ pub const colors = Colors{
     .meter_off_fg = dim,
     .master_label_fg = dim,
     .vu_empty_fg = ghost,
+
+    .trk_summary_fg = dim,
+    .trk_focus_fg = cream,
+    .trk_focus_bg = amber,
+    .trk_live_fg = ink,
+    .vol_cell_fg = amber,
+    .fx_letter_fg = danger,
+    .ch_pcm_fg = amber,
+    .ch_control_fg = dim,
+    .ch_drum_fg = danger,
+    .ch_4op_fg = ink,
+    .ch_page_fg = dim,
+    .macro_pos_fg = ink,
+    .note_fixed_fg = amber,
+    .voice_key_on_fg = ink,
+    .voice_key_off_fg = ghost,
+    .dump_reg_fg = dim,
+    .dump_val_fg = readout,
+    .seq_track_fg = dim,
+    .seq_event_fg = text,
+    .order_ptr_fg = ink,
 };
 
 pub const vu_stops = [3]VuStop{

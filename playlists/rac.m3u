@@ -1,0 +1,74 @@
+#EXTM3U
+#PLAYLIST:RdosPlay RAC captures
+# Original RAC / RdosPlay sample pack from DiscMaster (Audio Toolkit
+# Walnut Creek CD, rplay017.zip). RAC wrote .raw (RACDATA.RAW). No public
+# .rac corpus is known. These 34 files are that original pack.
+
+#EXTINF:-1,A-Train A
+https://discmaster.textfiles.com/file/20969/0_Audio_Toolkit_Walnut_Creek_September_1997.iso/pc/msdos/mod/players/rplay017.zip/FILES/RAW/ATRAIN_A.RAW
+#EXTINF:-1,A-Train B
+https://discmaster.textfiles.com/file/20969/0_Audio_Toolkit_Walnut_Creek_September_1997.iso/pc/msdos/mod/players/rplay017.zip/FILES/RAW/ATRAIN_B.RAW
+#EXTINF:-1,A-Train C
+https://discmaster.textfiles.com/file/20969/0_Audio_Toolkit_Walnut_Creek_September_1997.iso/pc/msdos/mod/players/rplay017.zip/FILES/RAW/ATRAIN_C.RAW
+#EXTINF:-1,AdLib S3M
+https://discmaster.textfiles.com/file/20969/0_Audio_Toolkit_Walnut_Creek_September_1997.iso/pc/msdos/mod/players/rplay017.zip/FILES/RAW/ADLIBS3M.RAW
+#EXTINF:-1,Arkanoid A
+https://discmaster.textfiles.com/file/20969/0_Audio_Toolkit_Walnut_Creek_September_1997.iso/pc/msdos/mod/players/rplay017.zip/FILES/RAW/ARKND_A.RAW
+#EXTINF:-1,Arkanoid B
+https://discmaster.textfiles.com/file/20969/0_Audio_Toolkit_Walnut_Creek_September_1997.iso/pc/msdos/mod/players/rplay017.zip/FILES/RAW/ARKND_B.RAW
+#EXTINF:-1,Blastersound
+https://discmaster.textfiles.com/file/20969/0_Audio_Toolkit_Walnut_Creek_September_1997.iso/pc/msdos/mod/players/rplay017.zip/FILES/RAW/BLASND.RAW
+#EXTINF:-1,Brazen
+https://discmaster.textfiles.com/file/20969/0_Audio_Toolkit_Walnut_Creek_September_1997.iso/pc/msdos/mod/players/rplay017.zip/FILES/RAW/BRAZEN.RAW
+#EXTINF:-1,Cadaver
+https://discmaster.textfiles.com/file/20969/0_Audio_Toolkit_Walnut_Creek_September_1997.iso/pc/msdos/mod/players/rplay017.zip/FILES/RAW/CADAVER.RAW
+#EXTINF:-1,Cheat
+https://discmaster.textfiles.com/file/20969/0_Audio_Toolkit_Walnut_Creek_September_1997.iso/pc/msdos/mod/players/rplay017.zip/FILES/RAW/CHEAT.RAW
+#EXTINF:-1,Crusader
+https://discmaster.textfiles.com/file/20969/0_Audio_Toolkit_Walnut_Creek_September_1997.iso/pc/msdos/mod/players/rplay017.zip/FILES/RAW/CRUSADER.RAW
+#EXTINF:-1,Del Fld
+https://discmaster.textfiles.com/file/20969/0_Audio_Toolkit_Walnut_Creek_September_1997.iso/pc/msdos/mod/players/rplay017.zip/FILES/RAW/DEL_FLD.RAW
+#EXTINF:-1,Digi
+https://discmaster.textfiles.com/file/20969/0_Audio_Toolkit_Walnut_Creek_September_1997.iso/pc/msdos/mod/players/rplay017.zip/FILES/RAW/DIGI.RAW
+#EXTINF:-1,F-15 Strike Eagle
+https://discmaster.textfiles.com/file/20969/0_Audio_Toolkit_Walnut_Creek_September_1997.iso/pc/msdos/mod/players/rplay017.zip/FILES/RAW/F15.RAW
+#EXTINF:-1,Gamesnet
+https://discmaster.textfiles.com/file/20969/0_Audio_Toolkit_Walnut_Creek_September_1997.iso/pc/msdos/mod/players/rplay017.zip/FILES/RAW/GAMESNET.RAW
+#EXTINF:-1,Gods
+https://discmaster.textfiles.com/file/20969/0_Audio_Toolkit_Walnut_Creek_September_1997.iso/pc/msdos/mod/players/rplay017.zip/FILES/RAW/GODS.RAW
+#EXTINF:-1,Hover
+https://discmaster.textfiles.com/file/20969/0_Audio_Toolkit_Walnut_Creek_September_1997.iso/pc/msdos/mod/players/rplay017.zip/FILES/RAW/HOVER.RAW
+#EXTINF:-1,Knights of the Sky
+https://discmaster.textfiles.com/file/20969/0_Audio_Toolkit_Walnut_Creek_September_1997.iso/pc/msdos/mod/players/rplay017.zip/FILES/RAW/KNIGHSKY.RAW
+#EXTINF:-1,Loom A
+https://discmaster.textfiles.com/file/20969/0_Audio_Toolkit_Walnut_Creek_September_1997.iso/pc/msdos/mod/players/rplay017.zip/FILES/RAW/LOOM_A.RAW
+#EXTINF:-1,Loom B
+https://discmaster.textfiles.com/file/20969/0_Audio_Toolkit_Walnut_Creek_September_1997.iso/pc/msdos/mod/players/rplay017.zip/FILES/RAW/LOOM_B.RAW
+#EXTINF:-1,Micro Machines
+https://discmaster.textfiles.com/file/20969/0_Audio_Toolkit_Walnut_Creek_September_1997.iso/pc/msdos/mod/players/rplay017.zip/FILES/RAW/MICRMACH.RAW
+#EXTINF:-1,Monkey Island 2 1
+https://discmaster.textfiles.com/file/20969/0_Audio_Toolkit_Walnut_Creek_September_1997.iso/pc/msdos/mod/players/rplay017.zip/FILES/RAW/MONKEY21.RAW
+#EXTINF:-1,Monkey Island 2 2
+https://discmaster.textfiles.com/file/20969/0_Audio_Toolkit_Walnut_Creek_September_1997.iso/pc/msdos/mod/players/rplay017.zip/FILES/RAW/MONKEY22.RAW
+#EXTINF:-1,Monkey Island 2 3
+https://discmaster.textfiles.com/file/20969/0_Audio_Toolkit_Walnut_Creek_September_1997.iso/pc/msdos/mod/players/rplay017.zip/FILES/RAW/MONKEY23.RAW
+#EXTINF:-1,Monkey Island 2 4
+https://discmaster.textfiles.com/file/20969/0_Audio_Toolkit_Walnut_Creek_September_1997.iso/pc/msdos/mod/players/rplay017.zip/FILES/RAW/MONKEY24.RAW
+#EXTINF:-1,Pentagram
+https://discmaster.textfiles.com/file/20969/0_Audio_Toolkit_Walnut_Creek_September_1997.iso/pc/msdos/mod/players/rplay017.zip/FILES/RAW/PENTAGRM.RAW
+#EXTINF:-1,Pmonger
+https://discmaster.textfiles.com/file/20969/0_Audio_Toolkit_Walnut_Creek_September_1997.iso/pc/msdos/mod/players/rplay017.zip/FILES/RAW/PMONGER.RAW
+#EXTINF:-1,Prince of Persia
+https://discmaster.textfiles.com/file/20969/0_Audio_Toolkit_Walnut_Creek_September_1997.iso/pc/msdos/mod/players/rplay017.zip/FILES/RAW/PERSIA.RAW
+#EXTINF:-1,Starport
+https://discmaster.textfiles.com/file/20969/0_Audio_Toolkit_Walnut_Creek_September_1997.iso/pc/msdos/mod/players/rplay017.zip/FILES/RAW/STARPORT.RAW
+#EXTINF:-1,Stellar 7
+https://discmaster.textfiles.com/file/20969/0_Audio_Toolkit_Walnut_Creek_September_1997.iso/pc/msdos/mod/players/rplay017.zip/FILES/RAW/STELLAR7.RAW
+#EXTINF:-1,Ugh A
+https://discmaster.textfiles.com/file/20969/0_Audio_Toolkit_Walnut_Creek_September_1997.iso/pc/msdos/mod/players/rplay017.zip/FILES/RAW/UGH_A.RAW
+#EXTINF:-1,Ugh B
+https://discmaster.textfiles.com/file/20969/0_Audio_Toolkit_Walnut_Creek_September_1997.iso/pc/msdos/mod/players/rplay017.zip/FILES/RAW/UGH_B.RAW
+#EXTINF:-1,Winter Challenge A
+https://discmaster.textfiles.com/file/20969/0_Audio_Toolkit_Walnut_Creek_September_1997.iso/pc/msdos/mod/players/rplay017.zip/FILES/RAW/WINTER_A.RAW
+#EXTINF:-1,Winter Challenge B
+https://discmaster.textfiles.com/file/20969/0_Audio_Toolkit_Walnut_Creek_September_1997.iso/pc/msdos/mod/players/rplay017.zip/FILES/RAW/WINTER_B.RAW

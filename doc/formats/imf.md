@@ -55,8 +55,21 @@ game metadata is present.
 
 ### Plain framing
 
-Plain files use a simple first-word test. The input must contain at least four
-bytes before this test.
+Plain files first check for an early four-byte length, then use the first-word
+rule below. The input must contain at least four bytes.
+
+#### Early four-byte lengths
+
+Early files, including the Keen 4 demo variant, can prefix the stream with a
+little-endian `u32` length. The candidate length must be nonzero, divisible
+by four, and fit after the prefix. Two-byte files can have the same first
+four bytes when their first record writes zero to register zero.
+
+To distinguish them, compare up to 42 records at each alignment. The score
+is the sum of the register/value words minus the sum of the delay words.
+Use the four-byte prefix only when its score is higher. A tie keeps the
+two-byte interpretation. This follows the usual IMF alignment heuristic,
+not an unambiguous format marker. The tag footer follows the chosen stream.
 
 #### Type 0
 
@@ -88,7 +101,7 @@ remains.
 Bytes after the selected stream may carry a tag footer (below). Anything else
 there is ignored.
 
-The first-word test is intentionally simple. A type-0 file whose first two
+The first-word fallback is intentionally simple. A type-0 file whose first two
 command bytes form a nonzero word will be read as type 1. Historical tools use
 several heuristics, but the file format provides no unambiguous marker.
 
@@ -154,9 +167,9 @@ sehnsucht --rate=280 tune.imf
 
 The **R** key cycles 280, 560, and 700 Hz while a rate-adjustable track is
 loaded, including while paused. Space replay and AudioT `,` / `.` keep the
-chosen rate. A playlist skip or Enter jump starts the next file at `--rate`
-or the path default. If you launched with `--rate`, R updates that session
-override instead.
+chosen rate. A playlist skip or Enter jump starts the next file at `--rate`,
+else at the playlist entry's `rate=` hint, else at the path default. If you
+launched with `--rate`, R updates that session override instead.
 
 ### Frame conversion
 
@@ -188,7 +201,9 @@ game name. A type-1 tag footer may supply a title and an author. Titles from
 either source are embedded metadata only when nonempty.
 
 Labels follow the path (`IMF`, `WLF`, `ADLIB`). A file loaded at 700 Hz is
-labelled `WLF`. Cycling the rate later does not change that label.
+labelled `WLF`. Pressing R does not relabel the playing source. A seek or Space
+replay reloads the file at the cycled rate and recomputes the label, so an
+`.imf` or `.adlib` file reloaded at 700 Hz shows `WLF`.
 
 ## Errors
 
@@ -197,11 +212,3 @@ than four bytes are rejected. A malformed `ADLIB` wrapper falls back to plain
 framing. An overrunning declared length is clamped and a trailing partial
 record is dropped rather than rejected. A stream is rejected when no complete
 command record remains or all command delays are zero.
-
-## Compatibility notes
-
-* Early AudioT archives may use a four-byte music length. The plain IMF parser
-  only understands the two-byte type-1 length.
-* Free-form text footers without a recognized tag block are ignored.
-* `.adlib` selects a default rate of 560 Hz. Some `.adlib` rips came from
-  700 Hz games and need an override.

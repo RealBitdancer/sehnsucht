@@ -7,9 +7,13 @@ const std = @import("std");
 const opal = @import("opal");
 
 const fmt = @import("../format.zig");
+const view = @import("../view.zig");
 const chip_adapter = @import("../chip.zig");
 
+pub const format_name = "RAW";
+pub const extensions = &.{ ".raw", ".rac" };
 pub const visualizer_name = "stream";
+pub const view_caps = view.ViewCaps{ .dump = true };
 
 const magic = "RAWADATA";
 const header_bytes = 10;
@@ -36,11 +40,15 @@ const RawSource = struct {
     pos: usize = 0,
     sample_rate: u32,
     speed: u16,
+    initial_speed: u16,
     bank: u16 = 0,
     frac: u32 = 0,
     title: ?[]const u8,
     title_embedded: bool,
     artist: ?[]const u8,
+    format_name: []const u8,
+    dual_opl2: bool = false,
+    write_count: u32 = 0,
 
     fn framesForTicks(self: *RawSource, ticks: u64) u64 {
         const speed = @max(@as(u32, 1), self.speed);
@@ -58,22 +66,22 @@ const RawSource = struct {
             self.pos += 1;
             ops += 1;
 
-            switch (@as(Command, @enumFromInt(rec.command))) {
+            switch (@as(Command, @fromBackingInt(@intCast(rec.command)))) {
                 .delay => {
                     const ticks: u64 = if (rec.param == 0) 256 else rec.param;
                     return .{ .frames = self.framesForTicks(ticks) };
                 },
-                .control => {
-                    if (rec.param == 0) {
+                .control => switch (rec.param) {
+                    0 => {
                         if (self.pos >= self.records.len) break;
                         const next = self.records[self.pos];
                         self.pos += 1;
                         ops += 1;
                         self.speed = @as(u16, next.param) | (@as(u16, next.command) << 8);
                         if (self.speed == 0) self.speed = 0xffff;
-                    } else {
-                        self.bank = @as(u16, rec.param -% 1) * 0x100;
-                    }
+                    },
+                    1, 2 => self.bank = @as(u16, rec.param - 1) * 0x100,
+                    else => {},
                 },
                 .end => {
                     if (rec.param == 0xff) break;
@@ -89,6 +97,7 @@ const RawSource = struct {
         }
         self.pos = 0;
         self.bank = 0;
+        self.speed = self.initial_speed;
         return .{ .frames = 0, .done = true };
     }
 
@@ -97,11 +106,18 @@ const RawSource = struct {
             .title = self.title,
             .title_embedded = self.title_embedded,
             .artist = self.artist,
-            .format_name = "RAW",
+            .format_name = self.format_name,
             .opl3 = false,
-            .system = "OPL2",
+            .system = if (self.dual_opl2) "Dual OPL2" else "OPL2",
             .loop = true,
-            .visualizer = visualizer_name,
+        };
+    }
+
+    pub fn dumpView(self: *RawSource) view.DumpView {
+        return .{
+            .chip = if (self.dual_opl2) .dual_opl2 else .opl2,
+            .write_count = self.write_count,
+            .pit_divisor = self.initial_speed,
         };
     }
 
@@ -138,7 +154,7 @@ fn parse(data: []const u8) error{InvalidRaw}!?Parsed {
     while (i + 1 < end) {
         // The record after a set-speed command is a 16-bit operand, not a
         // command, so a speed of 0xFFFF must not read as the end marker.
-        if (body[i + 1] == @intFromEnum(Command.control) and body[i] == 0) {
+        if (body[i + 1] == @backingInt(Command.control) and body[i] == 0) {
             i += 4;
             continue;
         }
@@ -176,7 +192,7 @@ fn readCString(data: []const u8, max_len: usize) []const u8 {
     return std.mem.sliceTo(data[0..@min(data.len, max_len)], 0);
 }
 
-fn load(
+pub fn load(
     gpa: std.mem.Allocator,
     data: []const u8,
     ctx: fmt.LoadContext,
@@ -193,30 +209,55 @@ fn load(
     const artist = if (parsed.artist.len != 0) try gpa.dupe(u8, parsed.artist) else null;
     errdefer if (artist) |a| gpa.free(a);
 
+    var dual = false;
+    var writes: u32 = 0;
+    var i: usize = 0;
+    while (i < records.len) : (i += 1) {
+        switch (@as(Command, @fromBackingInt(@intCast(records[i].command)))) {
+            .delay => {},
+            .control => switch (records[i].param) {
+                0 => i += 1,
+                2 => dual = true,
+                else => {},
+            },
+            .end => if (records[i].param != 0xff) {
+                writes += 1;
+            },
+            _ => writes += 1,
+        }
+    }
+
     const src = try gpa.create(RawSource);
     errdefer gpa.destroy(src);
     src.* = .{
         .records = records,
         .sample_rate = ctx.sample_rate,
         .speed = parsed.clock,
+        .initial_speed = parsed.clock,
         .title = title,
         .title_embedded = title != null,
         .artist = artist,
+        .format_name = nameForExt(ctx.ext),
+        .dual_opl2 = dual,
+        .write_count = writes,
     };
 
     ctx.chip.writeReg(0x01, 0x20);
     chip_adapter.enableNew(ctx.chip);
     ctx.chip.flush();
 
-    return fmt.MusicSource.init(src);
+    return fmt.MusicSource.init(src, visualizer_name);
 }
 
-pub const format = fmt.Format{
-    .name = "RAW",
-    .extensions = &.{".raw"},
-    .visualizer = visualizer_name,
-    .load = load,
-};
+fn nameForExt(ext: []const u8) []const u8 {
+    return if (std.ascii.eqlIgnoreCase(ext, ".rac")) "RAC" else "RAW";
+}
+
+pub fn labelForPath(path: []const u8) []const u8 {
+    return nameForExt(fmt.extensionOf(path));
+}
+
+pub const format = fmt.Format.init(@This());
 
 // --- tests -------------------------------------------------------------------
 
@@ -394,4 +435,56 @@ test "raw step yields before millions of zero-delay writes" {
         try std.testing.expect(!r.done);
     }
     try std.testing.expect(saw_delay);
+}
+
+test "rac extension loads as RAC with the same stream" {
+    const gpa = std.testing.allocator;
+    const data = magic ++ [_]u8{
+        0xff, 0xff,
+        0x20, 0x01,
+        0x01, 0x00,
+        0xff, 0xff,
+    };
+    var src = (try fmt.load(gpa, "t.rac", data, .{
+        .sample_rate = 44100,
+        .chip = fmt.noop_chip,
+    })) orelse return error.TestUnexpectedResult;
+    defer src.deinit(gpa);
+    try std.testing.expectEqualStrings("RAC", src.info().format_name);
+    try std.testing.expect(src.step(fmt.noop_chip).frames > 0);
+    try std.testing.expect(src.step(fmt.noop_chip).done);
+}
+
+test "raw path labels follow the extension" {
+    try std.testing.expectEqualStrings("RAW", labelForPath("cap.raw"));
+    try std.testing.expectEqualStrings("RAC", labelForPath("cap.rac"));
+    try std.testing.expectEqualStrings("RAC", fmt.displayLabelForPath("https://x/tune.RAC").?);
+    try std.testing.expect(fmt.isPlayablePath("tune.rac"));
+    try std.testing.expect(fmt.isPlayablePath("tune.RAW"));
+}
+
+test "raw ignores chip selects other than 1 and 2" {
+    const gpa = std.testing.allocator;
+    const data = magic ++ [_]u8{
+        0xe8, 0x03,
+        0x03, 0x02,
+        0x55, 0xb0,
+        0x01, 0x00,
+        0xff, 0xff,
+    };
+    const Rec = struct {
+        regs: [0x400]u8 = @splat(0),
+        fn write(ptr: *anyopaque, reg: u16, val: u8) void {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            if (reg < self.regs.len) self.regs[reg] = val;
+        }
+        fn flushNop(_: *anyopaque) void {}
+    };
+    var rec: Rec = .{};
+    const chip: fmt.Chip = .{ .ptr = &rec, .vtable = &.{ .writeReg = Rec.write, .flush = Rec.flushNop } };
+    const src = (try load(gpa, data, .{ .sample_rate = 44100, .chip = chip, .ext = ".raw" })).?;
+    defer src.deinit(gpa);
+    try std.testing.expect(src.step(chip).frames > 0);
+    try std.testing.expectEqual(@as(u8, 0x55), rec.regs[0xb0]);
+    try std.testing.expectEqual(view.ChipKind.opl2, src.views().dump.?.chip);
 }

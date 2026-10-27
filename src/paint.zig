@@ -12,12 +12,47 @@ const default_theme = @import("theme.zig").default_theme;
 pub const eighths = [_][]const u8{ "▁", "▂", "▃", "▄", "▅", "▆", "▇" };
 
 pub fn printAt(win: vaxis.Window, x: u16, row: u16, text: []const u8, style: vaxis.Style) void {
-    if (text.len == 0) return;
-    _ = win.print(&.{.{ .text = text, .style = style }}, .{
-        .col_offset = x,
-        .row_offset = row,
-        .wrap = .none,
-    });
+    var col = x;
+    var i: usize = 0;
+    while (i < text.len and col < win.width) {
+        const g = glyphAt(win, text, i);
+        const piece = if (codepointLen(text[i..]) == null) replacement_glyph else text[i..g.next];
+        col = win.print(&.{.{ .text = piece, .style = style }}, .{
+            .col_offset = col,
+            .row_offset = row,
+            .wrap = .none,
+        }).col;
+        i = g.next;
+    }
+}
+
+const replacement_glyph = "\u{FFFD}";
+
+fn codepointLen(text: []const u8) ?usize {
+    const n = std.unicode.utf8ByteSequenceLength(text[0]) catch return null;
+    if (n > text.len or !std.unicode.utf8ValidateSlice(text[0..n])) return null;
+    return n;
+}
+
+fn validPrefixLen(text: []const u8) usize {
+    var i: usize = 0;
+    while (i < text.len) i += codepointLen(text[i..]) orelse break;
+    return i;
+}
+
+pub fn skipColumns(win: vaxis.Window, text: []const u8, cols: u16) []const u8 {
+    var skipped: u32 = 0;
+    var i: usize = 0;
+    while (i < text.len and skipped < cols) {
+        const g = glyphAt(win, text, i);
+        skipped += g.w;
+        i = g.next;
+    }
+    return text[i..];
+}
+
+pub fn textWidth(win: vaxis.Window, text: []const u8) u16 {
+    return columnWidth(win, text, std.math.maxInt(u16));
 }
 
 pub fn fillRow(win: vaxis.Window, row: u16, style: vaxis.Style) void {
@@ -99,6 +134,7 @@ pub fn drawRule(win: vaxis.Window, theme: Theme, row: u16, width: u16) void {
 
 pub const Hotkey = struct {
     key: []const u8,
+    codepoint: ?u21 = null,
     label: []const u8,
     enabled: bool = true,
     label_enabled: ?bool = null,
@@ -106,6 +142,30 @@ pub const Hotkey = struct {
 
     fn labelIsEnabled(self: Hotkey) bool {
         return self.label_enabled orelse self.enabled;
+    }
+};
+
+pub const HotkeyHits = struct {
+    const Hit = struct { x0: i17, x1: i17, row: i17, codepoint: u21 };
+    items: [16]Hit = undefined,
+    len: usize = 0,
+
+    pub fn add(self: *HotkeyHits, win: vaxis.Window, row: u16, x0: u16, x1: u16, codepoint: u21) void {
+        if (self.len == self.items.len or row >= win.height or x0 >= win.width) return;
+        self.items[self.len] = .{
+            .x0 = @as(i17, win.x_off) + x0,
+            .x1 = @as(i17, win.x_off) + @min(x1, win.width),
+            .row = @as(i17, win.y_off) + row,
+            .codepoint = codepoint,
+        };
+        self.len += 1;
+    }
+
+    pub fn keyAt(self: *const HotkeyHits, col: i16, row: i16) ?u21 {
+        for (self.items[0..self.len]) |hit| {
+            if (row == hit.row and col >= hit.x0 and col < hit.x1) return hit.codepoint;
+        }
+        return null;
     }
 };
 
@@ -117,6 +177,7 @@ pub fn drawHotkeyHints(
     row: u16,
     hints: []const Hotkey,
     x0: u16,
+    hits: *HotkeyHits,
 ) void {
     if (hints.len == 0) return;
     const sep_style = theme.style(.key_sep);
@@ -138,6 +199,7 @@ pub fn drawHotkeyHints(
         }
         const key_style = if (hk.enabled) theme.style(.key_key) else theme.style(.key_key_disabled);
         const label_style = if (hk.labelIsEnabled()) theme.style(.key_label) else theme.style(.key_label_disabled);
+        if (hk.enabled) if (hk.codepoint) |key| hits.add(win, row, x, x + chip_w, key);
         printAt(win, x, row, hk.key, key_style);
         x += win.gwidth(hk.key);
         if (hk.label.len > 0) {
@@ -155,21 +217,21 @@ pub fn listNavigationHints(total: usize, cursor: usize) [6]Hotkey {
     const can_down = total > 0 and current + 1 < total;
     const can_move = can_up or can_down;
     return .{
-        .{ .key = "↑", .label = "", .enabled = can_up },
-        .{ .key = "↓", .label = "move", .enabled = can_down, .label_enabled = can_move, .glue = true },
-        .{ .key = "PgUp", .label = "", .enabled = can_up },
-        .{ .key = "PgDn", .label = "page", .enabled = can_down, .label_enabled = can_move, .glue = true },
-        .{ .key = "Home", .label = "", .enabled = can_up },
-        .{ .key = "End", .label = "jump", .enabled = can_down, .label_enabled = can_move, .glue = true },
+        .{ .key = "↑", .codepoint = vaxis.Key.up, .label = "", .enabled = can_up },
+        .{ .key = "↓", .codepoint = vaxis.Key.down, .label = "move", .enabled = can_down, .label_enabled = can_move, .glue = true },
+        .{ .key = "PgUp", .codepoint = vaxis.Key.page_up, .label = "", .enabled = can_up },
+        .{ .key = "PgDn", .codepoint = vaxis.Key.page_down, .label = "page", .enabled = can_down, .label_enabled = can_move, .glue = true },
+        .{ .key = "Home", .codepoint = vaxis.Key.home, .label = "", .enabled = can_up },
+        .{ .key = "End", .codepoint = vaxis.Key.end, .label = "jump", .enabled = can_down, .label_enabled = can_move, .glue = true },
     };
 }
 
-pub fn drawListKeyBar(win: vaxis.Window, theme: Theme, hints: []const Hotkey) void {
+pub fn drawListKeyBar(win: vaxis.Window, theme: Theme, hints: []const Hotkey, hits: *HotkeyHits) void {
     if (win.height < key_bar_height) return;
     const row = win.height - 1;
     drawRule(win, theme, row - 1, win.width);
     fillRow(win, row, theme.style(.key_label));
-    drawHotkeyHints(win, theme, row, hints, 1);
+    drawHotkeyHints(win, theme, row, hints, 1, hits);
 }
 
 pub fn listEnsureVisible(scroll: *usize, cursor: usize, total: usize, page_h: usize) void {
@@ -188,6 +250,7 @@ pub fn listEnsureVisible(scroll: *usize, cursor: usize, total: usize, page_h: us
 }
 
 pub const ListNav = struct {
+    key_hits: HotkeyHits = .{},
     cursor: usize = 0,
     scroll: usize = 0,
     page_h: usize = 0,
@@ -258,14 +321,14 @@ pub fn drawScrollbar(
 ) void {
     if (list_h == 0 or total <= list_h) return;
     const x = win.width -| 1;
-    const track_bg = theme.colors.scroll_track_bg;
-    const thumb_bg = theme.colors.scroll_thumb_bg;
+    const track = theme.style(.scroll_track);
+    const thumb = theme.style(.scroll_thumb);
 
     var y: u16 = 0;
     while (y < list_h) : (y += 1) {
         win.writeCell(x, list_top + y, .{
             .char = .{ .grapheme = " ", .width = 1 },
-            .style = .{ .fg = track_bg, .bg = track_bg },
+            .style = track,
         });
     }
 
@@ -281,35 +344,88 @@ pub fn drawScrollbar(
     while (t < thumb_h) : (t += 1) {
         win.writeCell(x, list_top + thumb_y + t, .{
             .char = .{ .grapheme = " ", .width = 1 },
-            .style = .{ .fg = thumb_bg, .bg = thumb_bg },
+            .style = thumb,
         });
     }
 }
 
+const Glyph = struct { w: u16, next: usize };
+
+const max_cluster_bytes = 64;
+
+fn glyphAt(win: vaxis.Window, text: []const u8, i: usize) Glyph {
+    if (i >= text.len) return .{ .w = 0, .next = i };
+    if (std.ascii.isPrint(text[i]) and (i + 1 == text.len or std.ascii.isAscii(text[i + 1]))) return .{ .w = 1, .next = i + 1 };
+    const window = text[i..@min(text.len, i + max_cluster_bytes)];
+    const run = window[0..validPrefixLen(window)];
+    if (run.len == 0) return .{ .w = 1, .next = i + 1 };
+    var clusters = vaxis.unicode.graphemeIterator(run);
+    const cluster = clusters.next() orelse return .{ .w = 1, .next = i + 1 };
+    return .{ .w = win.gwidth(cluster.bytes(run)), .next = i + cluster.len };
+}
+
+pub fn columnWidth(win: vaxis.Window, text: []const u8, limit: u16) u16 {
+    var cols: u16 = 0;
+    var i: usize = 0;
+    while (i < text.len and cols < limit) {
+        const g = glyphAt(win, text, i);
+        if (g.next == i) break;
+        if (@as(u32, cols) + g.w > limit) break;
+        cols += g.w;
+        i = g.next;
+    }
+    return cols;
+}
+
+fn fitsWidth(win: vaxis.Window, text: []const u8, max_cols: u16) bool {
+    var cols: u16 = 0;
+    var i: usize = 0;
+    while (i < text.len) {
+        const g = glyphAt(win, text, i);
+        if (g.next == i) break;
+        if (@as(u32, cols) + g.w > max_cols) return false;
+        cols += g.w;
+        i = g.next;
+    }
+    return true;
+}
+
 fn fitText(win: vaxis.Window, text: []const u8, max_cols: u16) []const u8 {
-    if (win.gwidth(text) <= max_cols) return text;
     var end: usize = 0;
     var cols: u16 = 0;
     while (end < text.len) {
-        const n = std.unicode.utf8ByteSequenceLength(text[end]) catch 1;
-        const next = @min(text.len, end + n);
-        const w = win.gwidth(text[end..next]);
-        if (cols + w > max_cols) break;
-        cols += w;
-        end = next;
+        const g = glyphAt(win, text, end);
+        if (g.next == end) break;
+        if (@as(u32, cols) + g.w > max_cols) break;
+        cols += g.w;
+        end = g.next;
     }
     return text[0..end];
 }
 
 fn fitTextTail(win: vaxis.Window, text: []const u8, max_cols: u16) []const u8 {
-    if (win.gwidth(text) <= max_cols) return text;
+    if (max_cols == 0 or text.len == 0) return text[text.len..];
     var start: usize = 0;
-    while (start < text.len) {
-        const n = std.unicode.utf8ByteSequenceLength(text[start]) catch 1;
-        start = @min(text.len, start + n);
-        if (win.gwidth(text[start..]) <= max_cols) return text[start..];
+    var end: usize = 0;
+    var cols: u16 = 0;
+    while (end < text.len) {
+        const g = glyphAt(win, text, end);
+        if (g.next == end) break;
+        if (g.w > max_cols) {
+            start = g.next;
+            end = g.next;
+            cols = 0;
+            continue;
+        }
+        while (@as(u32, cols) + g.w > max_cols and start < end) {
+            const dropped = glyphAt(win, text, start);
+            cols -= dropped.w;
+            start = dropped.next;
+        }
+        cols += g.w;
+        end = g.next;
     }
-    return text[text.len..];
+    return text[start..];
 }
 
 pub fn printFit(
@@ -321,13 +437,13 @@ pub fn printFit(
     style: vaxis.Style,
 ) void {
     if (max_cols == 0) return;
-    if (win.gwidth(text) <= max_cols) {
+    if (fitsWidth(win, text, max_cols)) {
         printAt(win, x, row, text, style);
         return;
     }
-    const head = fitText(win, text, max_cols - 1);
+    const head = fitText(win, text, max_cols -| 1);
     printAt(win, x, row, head, style);
-    printAt(win, x + win.gwidth(head), row, "…", style);
+    printAt(win, x + columnWidth(win, head, max_cols), row, "…", style);
 }
 
 pub fn printFitTail(
@@ -339,12 +455,12 @@ pub fn printFitTail(
     style: vaxis.Style,
 ) void {
     if (max_cols == 0) return;
-    if (win.gwidth(text) <= max_cols) {
+    if (fitsWidth(win, text, max_cols)) {
         printAt(win, x, row, text, style);
         return;
     }
     printAt(win, x, row, "…", style);
-    printAt(win, x + 1, row, fitTextTail(win, text, max_cols - 1), style);
+    printAt(win, x + 1, row, fitTextTail(win, text, max_cols -| 1), style);
 }
 
 // --- tests -------------------------------------------------------------------
@@ -441,4 +557,135 @@ test "printFit and printFitTail mark truncation with an ellipsis" {
     try std.testing.expectEqualStrings("…", screen.readCell(0, 0).?.char.grapheme);
     try std.testing.expectEqualStrings("o", screen.readCell(1, 0).?.char.grapheme);
     try std.testing.expectEqualStrings("r", screen.readCell(5, 0).?.char.grapheme);
+}
+
+test "invalid UTF-8 before a combining mark prints replacement glyphs" {
+    const gpa = std.testing.allocator;
+    var screen = try vaxis.Screen.init(gpa, .{
+        .rows = 1,
+        .cols = 12,
+        .x_pixel = 0,
+        .y_pixel = 0,
+    });
+    defer screen.deinit(gpa);
+    screen.width_method = .unicode;
+    const win = vaxis.Window{
+        .x_off = 0,
+        .y_off = 0,
+        .parent_x_off = 0,
+        .parent_y_off = 0,
+        .width = 12,
+        .height = 1,
+        .screen = &screen,
+    };
+
+    const cp437 = "S\xF1A\xCD\x81g";
+    try std.testing.expectEqual(@as(u16, 4), textWidth(win, cp437));
+    printAt(win, 0, 0, cp437, .{});
+    try std.testing.expectEqualStrings("S", screen.readCell(0, 0).?.char.grapheme);
+    try std.testing.expectEqualStrings("\u{FFFD}", screen.readCell(1, 0).?.char.grapheme);
+    try std.testing.expectEqualStrings("A\xCD\x81", screen.readCell(2, 0).?.char.grapheme);
+    try std.testing.expectEqualStrings("g", screen.readCell(3, 0).?.char.grapheme);
+
+    printFit(win, 0, 0, "\x80\xCC\x80 tail", 4, .{});
+    try std.testing.expectEqualStrings("\u{FFFD}", screen.readCell(0, 0).?.char.grapheme);
+    try std.testing.expectEqualStrings("…", screen.readCell(3, 0).?.char.grapheme);
+}
+
+test "text width follows the grapheme clusters that vaxis draws" {
+    const gpa = std.testing.allocator;
+    var screen = try vaxis.Screen.init(gpa, .{ .rows = 1, .cols = 16, .x_pixel = 0, .y_pixel = 0 });
+    defer screen.deinit(gpa);
+    screen.width_method = .unicode;
+    const win = vaxis.Window{ .x_off = 0, .y_off = 0, .parent_x_off = 0, .parent_y_off = 0, .width = 16, .height = 1, .screen = &screen };
+    for ([_][]const u8{ "I \u{2764}\u{FE0F} OPL", "\u{1F1EF}\u{1F1F5}ab", "\u{1F468}\u{200D}\u{1F469}x" }) |text| {
+        try std.testing.expectEqual(win.gwidth(text), textWidth(win, text));
+    }
+    printFit(win, 0, 0, "I \u{2764}\u{FE0F} OPL", 8, .{});
+    try std.testing.expectEqualStrings("L", screen.readCell(7, 0).?.char.grapheme);
+}
+
+test "glyph steps match vaxis clusters beside ASCII controls, CR LF, and joining marks" {
+    const gpa = std.testing.allocator;
+    var screen = try vaxis.Screen.init(gpa, .{ .rows = 1, .cols = 16, .x_pixel = 0, .y_pixel = 0 });
+    defer screen.deinit(gpa);
+    const win = vaxis.Window{ .x_off = 0, .y_off = 0, .parent_x_off = 0, .parent_y_off = 0, .width = 16, .height = 1, .screen = &screen };
+    const texts = [_][]const u8{ "a\tb", "x\x00y", "\x1b[0m", "a\x7fb", "ab\r\ncd\r", "e\u{301}x", "#\u{FE0F}\u{20E3}!", "~\u{200D}\u{1F469}z", "\u{600}a " };
+    for (std.enums.values(vaxis.gwidth.Method)) |method| {
+        screen.width_method = method;
+        for (texts) |text| {
+            var clusters = vaxis.unicode.graphemeIterator(text);
+            var i: usize = 0;
+            while (clusters.next()) |cluster| {
+                const g = glyphAt(win, text, i);
+                try std.testing.expectEqual(i + cluster.len, g.next);
+                try std.testing.expectEqual(win.gwidth(cluster.bytes(text)), g.w);
+                i = g.next;
+            }
+            try std.testing.expectEqual(text.len, i);
+        }
+    }
+}
+
+test "text after a line feed draws at the column its measurement gives" {
+    const gpa = std.testing.allocator;
+    var screen = try vaxis.Screen.init(gpa, .{ .rows = 2, .cols = 30, .x_pixel = 0, .y_pixel = 0 });
+    defer screen.deinit(gpa);
+    screen.width_method = .unicode;
+    const win = vaxis.Window{ .x_off = 0, .y_off = 0, .parent_x_off = 0, .parent_y_off = 0, .width = 30, .height = 2, .screen = &screen };
+    const text = "Part 1\nPart 2\xFFX";
+    try std.testing.expectEqual(@as(u16, 14), textWidth(win, text));
+    printFit(win, 0, 0, text, 30, .{});
+    try std.testing.expectEqualStrings("P", screen.readCell(6, 0).?.char.grapheme);
+    try std.testing.expectEqualStrings("2", screen.readCell(11, 0).?.char.grapheme);
+    try std.testing.expectEqualStrings("\u{FFFD}", screen.readCell(12, 0).?.char.grapheme);
+    try std.testing.expectEqualStrings("X", screen.readCell(13, 0).?.char.grapheme);
+
+    printFit(win, 0, 1, "Part 1\nPart 2 is long", 10, .{});
+    try std.testing.expectEqualStrings("r", screen.readCell(8, 1).?.char.grapheme);
+    try std.testing.expectEqualStrings("…", screen.readCell(9, 1).?.char.grapheme);
+}
+
+test "a cluster wider than a cell can record draws as measured pieces" {
+    const gpa = std.testing.allocator;
+    var screen = try vaxis.Screen.init(gpa, .{ .rows = 1, .cols = 260, .x_pixel = 0, .y_pixel = 0 });
+    defer screen.deinit(gpa);
+    screen.width_method = .wcwidth;
+    const win = vaxis.Window{ .x_off = 0, .y_off = 0, .parent_x_off = 0, .parent_y_off = 0, .width = 260, .height = 1, .screen = &screen };
+    const marks: [255][3]u8 = @splat("\u{903}".*);
+    const text = "a" ++ @as([marks.len * 3]u8, @bitCast(marks));
+    try std.testing.expectEqual(@as(u16, 256), textWidth(win, text));
+    printFit(win, 0, 0, text, 256, .{});
+    try std.testing.expect(std.mem.startsWith(u8, screen.readCell(0, 0).?.char.grapheme, "a"));
+    var col: u16 = 0;
+    while (col < 256) {
+        const cell = screen.readCell(col, 0).?;
+        try std.testing.expect(cell.char.grapheme.len <= max_cluster_bytes);
+        col += cell.char.width;
+    }
+    try std.testing.expectEqual(@as(u16, 256), col);
+    try std.testing.expectEqualStrings(" ", screen.readCell(256, 0).?.char.grapheme);
+}
+
+test "hotkey hit areas follow drawn cells and exclude disabled or clipped actions" {
+    const gpa = std.testing.allocator;
+    var screen = try vaxis.Screen.init(gpa, .{ .rows = 4, .cols = 40, .x_pixel = 0, .y_pixel = 0 });
+    defer screen.deinit(gpa);
+    screen.width_method = .unicode;
+    const win = vaxis.Window{ .x_off = 5, .y_off = 2, .parent_x_off = 0, .parent_y_off = 0, .width = 22, .height = 1, .screen = &screen };
+    const hints = [_]Hotkey{
+        .{ .key = "↑", .codepoint = vaxis.Key.up, .label = "", .enabled = false },
+        .{ .key = "↓", .codepoint = vaxis.Key.down, .label = "move", .glue = true },
+        .{ .key = "Enter", .codepoint = vaxis.Key.enter, .label = "open" },
+        .{ .key = "End", .codepoint = vaxis.Key.end, .label = "jump" },
+    };
+    var hits = HotkeyHits{};
+    drawHotkeyHints(win, default_theme, 0, &hints, 1, &hits);
+    try std.testing.expectEqual(@as(?u21, null), hits.keyAt(6, 2));
+    try std.testing.expectEqual(@as(?u21, vaxis.Key.down), hits.keyAt(8, 2));
+    try std.testing.expectEqual(@as(?u21, vaxis.Key.down), hits.keyAt(13, 2));
+    try std.testing.expectEqual(@as(?u21, null), hits.keyAt(14, 2));
+    try std.testing.expectEqual(@as(?u21, vaxis.Key.enter), hits.keyAt(26, 2));
+    try std.testing.expectEqual(@as(?u21, null), hits.keyAt(26, 1));
+    try std.testing.expectEqual(@as(usize, 2), hits.len);
 }

@@ -1,0 +1,10 @@
+#EXTM3U
+#PLAYLIST:HSC Packed
+# The known public HSP corpus. Packed HSC by Number Six / Aegis Corp.
+# SATNIGHT.HSP is AdPlug's test file (Modland satnight.hsc). skywalk.hsp is
+# the Aegis HSC Interface 1.1 example (Modland skywalk.hsc).
+
+#EXTINF:-1,Hannes Seifert - Out$pace - Satnight
+https://raw.githubusercontent.com/adplug/adplug/master/test/testmus/SATNIGHT.HSP
+#EXTINF:-1,Hannes Seifert - Out$pace - Skywalk
+http://69.43.38.172/mirrors/ftp.mpoli.fi/unpacked/tlr/pcboard_ppe_groups/aegis/agshi11.zip/skywalk.hsp

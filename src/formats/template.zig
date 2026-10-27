@@ -6,15 +6,18 @@
 const std = @import("std");
 
 const fmt = @import("../format.zig");
+const view = @import("../view.zig");
 
+pub const format_name = "Example";
+pub const extensions = &.{".example"};
 pub const visualizer_name = "stream";
+pub const view_caps = view.ViewCaps{ .dump = true };
 
 const ExampleSource = struct {
     data: []const u8,
     pos: usize = 0,
     sample_rate: u32,
     frac: u32 = 0,
-    title: []const u8,
     total_ticks: u64,
 
     pub fn step(self: *ExampleSource, chip: fmt.Chip) fmt.StepResult {
@@ -30,11 +33,9 @@ const ExampleSource = struct {
         return .{ .frames = fmt.rescale(delay, 560, self.sample_rate, &self.frac) };
     }
 
-    pub fn info(self: *ExampleSource) fmt.TrackInfo {
+    pub fn info(_: *ExampleSource) fmt.TrackInfo {
         return .{
-            .title = self.title,
             .format_name = "Example",
-            .visualizer = visualizer_name,
             .system = "OPL2",
             .loop = true,
         };
@@ -44,14 +45,21 @@ const ExampleSource = struct {
         return self.total_ticks * self.sample_rate / 560;
     }
 
+    pub fn dumpView(self: *ExampleSource) view.DumpView {
+        return .{
+            .chip = .opl2,
+            .write_count = @intCast(self.data.len / 4),
+            .header_tick = 560,
+        };
+    }
+
     pub fn deinit(self: *ExampleSource, gpa: std.mem.Allocator) void {
         gpa.free(self.data);
-        gpa.free(self.title);
         gpa.destroy(self);
     }
 };
 
-fn load(
+pub fn load(
     gpa: std.mem.Allocator,
     data: []const u8,
     ctx: fmt.LoadContext,
@@ -60,8 +68,6 @@ fn load(
 
     const copy = try gpa.dupe(u8, data);
     errdefer gpa.free(copy);
-    const title = try fmt.dupeDisplayBasename(gpa, ctx.name);
-    errdefer gpa.free(title);
     const src = try gpa.create(ExampleSource);
     errdefer gpa.destroy(src);
 
@@ -73,18 +79,12 @@ fn load(
     src.* = .{
         .data = copy,
         .sample_rate = ctx.sample_rate,
-        .title = title,
         .total_ticks = total_ticks,
     };
-    return fmt.MusicSource.init(src);
+    return fmt.MusicSource.init(src, visualizer_name);
 }
 
-pub const format = fmt.Format{
-    .name = "Example",
-    .extensions = &.{".example"},
-    .visualizer = visualizer_name,
-    .load = load,
-};
+pub const format = fmt.Format.init(@This());
 
 // --- tests -------------------------------------------------------------------
 

@@ -20,14 +20,14 @@ pub const State = struct {
         available: []const Theme,
         selected_index: usize,
     ) void {
+        self.nav.key_hits = .{};
         const header_rows: u16 = 3;
         const with_bar = win.height >= header_rows + paint.key_bar_height + 1;
         const bar_h: u16 = if (with_bar) paint.key_bar_height else 0;
         if (win.height < header_rows + 1) return;
 
         const count = available.len;
-        const title = std.fmt.allocPrint(
-            arena,
+        const title = arena.print(
             "Themes · {d} theme{s}",
             .{ count, if (count == 1) "" else "s" },
         ) catch "Themes";
@@ -66,21 +66,14 @@ pub const State = struct {
             const y = header_rows + row;
             const is_cursor = idx == cursor;
             const is_selected = idx == selected_index;
-            const bg = if (is_cursor)
-                selected_theme.colors.list_cursor_bg
+            const style = if (is_cursor)
+                selected_theme.style(.list_cursor)
             else if (is_selected)
-                selected_theme.colors.playlist_playing_bg
+                selected_theme.style(.playlist_playing)
             else
-                selected_theme.colors.bg;
-            const fg = if (is_cursor)
-                selected_theme.colors.list_cursor_fg
-            else if (is_selected)
-                selected_theme.colors.playlist_playing_fg
-            else
-                selected_theme.colors.list_row_fg;
-            const style = selected_theme.listEntry(fg, bg, is_cursor or is_selected);
+                selected_theme.style(.list_row);
 
-            paint.fillRowBg(win, y, 0, row_w, bg);
+            paint.fillRowBg(win, y, 0, row_w, style.bg);
 
             paint.printAt(win, 0, y, if (is_selected) "▶" else " ", style);
             paint.printFit(win, name_x, y, available[idx].display_name, name_w, style);
@@ -97,15 +90,15 @@ pub const State = struct {
         }
 
         if (show_sb) paint.drawScrollbar(win, selected_theme, header_rows, list_h, count, first);
-        if (with_bar) drawKeyBar(win, selected_theme, count, cursor);
+        if (with_bar) drawKeyBar(win, selected_theme, count, cursor, &self.nav.key_hits);
     }
 };
 
-fn drawKeyBar(win: vaxis.Window, theme: Theme, count: usize, cursor: usize) void {
+fn drawKeyBar(win: vaxis.Window, theme: Theme, count: usize, cursor: usize, hits: *paint.HotkeyHits) void {
     const hints = paint.listNavigationHints(count, cursor) ++ [_]paint.Hotkey{
-        .{ .key = "Enter", .label = "apply", .enabled = count > 0 },
+        .{ .key = "Enter", .codepoint = vaxis.Key.enter, .label = "apply", .enabled = count > 0 },
     };
-    paint.drawListKeyBar(win, theme, &hints);
+    paint.drawListKeyBar(win, theme, &hints, hits);
 }
 
 // --- tests -------------------------------------------------------------------

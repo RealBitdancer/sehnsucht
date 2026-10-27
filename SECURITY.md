@@ -5,25 +5,28 @@
 | Version | Supported |
 | ------- | --------- |
 | latest main | yes |
-| 0.2.x releases | yes |
+| 0.3.x releases | yes |
 | anything older | no |
 
 ## Reporting a vulnerability
 
-Report vulnerabilities privately through GitHub's security advisories. Open the Security tab
-of this repository and choose "Report a vulnerability". Please do not open a public issue
-for something exploitable.
+Report vulnerabilities privately through GitHub's security advisories. Open
+the Security tab of this repository and choose "Report a vulnerability".
+Please do not open a public issue for something exploitable.
 
-This is a spare time project with one maintainer, so the honest promise is best effort. You
-can expect an acknowledgment within a week and a fix as fast as severity warrants.
+This is a spare-time project with one maintainer. You can expect an
+acknowledgment within a week and a fix as fast as severity warrants.
 
 ## Scope
 
-The attack surface is file parsing and audio/UI glue. The player reads untrusted music
-files (HSC, RAD, LDS, VGM/VGZ, DRO, RAW, BAM, XSM, CMF, IMF/WLF, AudioT), including files fetched over
-http(s), and treats them with suspicion. Reads are bounds-checked,
-input size is capped, and release builds default to ReleaseSafe so the safety checks stay
-on. Malformed input should produce a clear refusal, never memory
+The attack surface is file parsing and audio/UI glue. The player reads untrusted
+music files, companion instrument banks, playlists, and compressed archives,
+including files fetched over http(s). The current decoder list is in
+[Supported formats](doc/supported-formats.md). The loader limits individual
+files to 16 MiB and named companion resources to 64 MiB combined. Decoders
+check boundaries and counts, and release builds use the safe optimize mode to retain
+safety checks. These are safeguards, not a claim that malformed input cannot
+expose a defect. Malformed input should produce a clear refusal, never memory
 corruption or a runaway process. A startup argument that cannot play exits
 with a nonzero code after teardown. Once the TUI is up, a later load failure
 stays in the session and marks the entry unplayable. If you find an input that

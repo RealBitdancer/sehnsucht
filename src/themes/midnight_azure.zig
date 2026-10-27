@@ -164,6 +164,27 @@ pub const colors = Colors{
     .meter_off_fg = disabled,
     .master_label_fg = dim,
     .vu_empty_fg = ghost,
+
+    .trk_summary_fg = label,
+    .trk_focus_fg = focus_fg,
+    .trk_focus_bg = focus_bg,
+    .trk_live_fg = live,
+    .vol_cell_fg = accent,
+    .fx_letter_fg = fx_violet,
+    .ch_pcm_fg = hotkey,
+    .ch_control_fg = dim,
+    .ch_drum_fg = danger,
+    .ch_4op_fg = brand,
+    .ch_page_fg = chrome,
+    .macro_pos_fg = accent,
+    .note_fixed_fg = hotkey,
+    .voice_key_on_fg = live,
+    .voice_key_off_fg = ghost,
+    .dump_reg_fg = label,
+    .dump_val_fg = bright,
+    .seq_track_fg = chrome,
+    .seq_event_fg = base,
+    .order_ptr_fg = accent,
 };
 
 pub const vu_stops = [3]VuStop{

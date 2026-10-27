@@ -7,12 +7,12 @@ const std = @import("std");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
-    // Default to ReleaseSafe: safety checks stay on for untrusted music files.
+    // Default to safe: safety checks stay on for untrusted music files.
     const optimize = b.option(
-        std.builtin.OptimizeMode,
+        std.lang.Optimize,
         "optimize",
-        "Optimization mode (default ReleaseSafe)",
-    ) orelse .ReleaseSafe;
+        "Optimization mode (default safe)",
+    ) orelse .safe;
 
     const strip = b.option(bool, "strip", "Strip debug information (default false)") orelse false;
 
@@ -78,7 +78,7 @@ pub fn build(b: *std.Build) void {
     const run_cmd = b.addRunArtifact(exe);
     run_step.dependOn(&run_cmd.step);
     run_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| run_cmd.addArgs(args);
+    run_cmd.addPassthruArgs();
 }
 
 // zaudio propagates its framework links to consumers but not the search path,

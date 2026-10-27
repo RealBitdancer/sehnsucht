@@ -1,0 +1,20 @@
+#EXTM3U
+#PLAYLIST:God of Thunder
+# Remote shareware GOT set from DiscMaster (Fun & Games 1 CD, GOTRES.DAT).
+# Roy Davis, Adept Software. Episode 1 only. Later episodes live in other DAT
+# files that this rip does not include. Title music is inside GOT.EXE, not here.
+
+#EXTINF:-1,Open (story)
+https://discmaster.textfiles.com/file/691/FUNGAMES1.cdr/fungames/got/gotres.dat/OPENSONG
+#EXTINF:-1,Song 1
+https://discmaster.textfiles.com/file/691/FUNGAMES1.cdr/fungames/got/gotres.dat/SONG1
+#EXTINF:-1,Song 2
+https://discmaster.textfiles.com/file/691/FUNGAMES1.cdr/fungames/got/gotres.dat/SONG2
+#EXTINF:-1,Song 3
+https://discmaster.textfiles.com/file/691/FUNGAMES1.cdr/fungames/got/gotres.dat/SONG3
+#EXTINF:-1,Song 4
+https://discmaster.textfiles.com/file/691/FUNGAMES1.cdr/fungames/got/gotres.dat/SONG4
+#EXTINF:-1,Boss
+https://discmaster.textfiles.com/file/691/FUNGAMES1.cdr/fungames/got/gotres.dat/BOSSSONG
+#EXTINF:-1,Win
+https://discmaster.textfiles.com/file/691/FUNGAMES1.cdr/fungames/got/gotres.dat/WINSONG

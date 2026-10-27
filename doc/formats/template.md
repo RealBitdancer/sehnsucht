@@ -24,6 +24,9 @@ conditions under which the decoder claims or rejects the input.]
 [List byte order, headers, offsets, field sizes, stream boundaries, side files,
 compression, and metadata containers. Use offset tables where useful.]
 
+[For companion resources, give the resource name, candidate filenames, lookup
+order, and missing-resource behavior. State format-specific size limits.]
+
 ## Decoding
 
 [Give an ordered parsing algorithm. Define every record, command, state
@@ -44,7 +47,9 @@ from another format.]
 ## Playback
 
 [Describe initialization, register or sample output, end-of-stream behavior,
-loops, and any deliberate compatibility behavior.]
+and loop targets and retained state.
+Name the visualizer and explain logical-to-hardware channel mapping, exposed
+views, and any data that remains available only through inspection.]
 
 ## Metadata
 
@@ -55,9 +60,3 @@ exposes. Write "The format contains no metadata" when appropriate.]
 
 [List rejection conditions and recoverable malformed-input behavior. Name
 sehnsucht errors when that helps callers distinguish failures.]
-
-## Compatibility notes
-
-[State unsupported variants, ambiguous detection rules, lossy mappings,
-historical quirks, and differences from other common decoders. Omit product UI
-details that do not affect parsing or playback.]

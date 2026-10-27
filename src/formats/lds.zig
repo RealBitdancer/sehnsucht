@@ -6,8 +6,22 @@
 const std = @import("std");
 
 const fmt = @import("../format.zig");
+const view = @import("../view.zig");
 
+pub const format_name = "LDS";
+pub const extensions = &.{ ".lds", ".ld0" };
 pub const visualizer_name = "tracker";
+pub const view_caps = view.ViewCaps{ .pattern = true, .order = true, .instruments = true };
+
+const lds_columns = [_]view.ColumnId{ .note, .instrument, .effect };
+const lds_cell_template = view.CellTemplate{ .width = 11, .note_w = 3, .inst_w = 2, .fx_w = 4 };
+
+const DisplayCell = packed struct(u32) {
+    tag: u8 = 0,
+    a: u8 = 0,
+    b: u8 = 0,
+    c: u8 = 0,
+};
 
 const voices = 9;
 const patch_mask: u8 = 0x3f;
@@ -21,6 +35,11 @@ const patch_without_midi = 40;
 const slot_bytes = 3;
 const missing_word: u16 = 0x8001;
 const steps_per_octave = 12 * 16;
+const semitone_fnums = blk: {
+    var notes: [12]u16 = undefined;
+    for (&notes, 0..) |*note, k| note.* = frequency[k * 16];
+    break :blk notes;
+};
 
 const op_offset = [_]u8{ 0x00, 0x01, 0x02, 0x08, 0x09, 0x0a, 0x10, 0x11, 0x12 };
 
@@ -81,6 +100,8 @@ comptime {
     if (vib_wave.len != 64) @compileError("vibrato table must be 64 entries");
     if (trem_wave.len != 128) @compileError("tremolo table must be 128 entries");
 }
+
+const vib_steps = 2 * vib_wave.len;
 
 const Op = struct {
     misc: u8 = 0,
@@ -179,8 +200,8 @@ const Event = union(enum) {
         const hi: u8 = @truncate(word >> 8);
         const lo: u8 = @truncate(word);
         if (hi < 0x80) return .{ .note = .{ .degree = hi, .patch = lo } };
-        if (hi == @intFromEnum(Cmd.wait)) return .{ .wait = lo };
-        return .{ .cmd = .{ .id = @enumFromInt(hi), .arg = lo } };
+        if (hi == @backingInt(Cmd.wait)) return .{ .wait = lo };
+        return .{ .cmd = .{ .id = @fromBackingInt(@intCast(hi)), .arg = lo } };
     }
 
     fn jumpsOrder(self: Event) bool {
@@ -270,6 +291,18 @@ fn pitchOf(tune: u16) struct { fnum: u16, octave: u16 } {
         .fnum = frequency[tune % steps_per_octave],
         .octave = (tune / steps_per_octave) -% 1,
     };
+}
+
+fn vibSpeed(arg: u8) u8 {
+    return (arg >> 4) + 2;
+}
+
+fn vibDepth(arg: u8) u8 {
+    return (arg & 15) + 1;
+}
+
+fn vibSwing(phase: u8, depth: u8) u8 {
+    return @intCast((@as(u16, vib_wave[phase & 0x3f]) * depth) >> 8);
 }
 
 fn mixArp(base: u16, arp: u16) u16 {
@@ -432,6 +465,7 @@ const LdsSource = struct {
     slots: []Slot,
     pool: []u16,
     view_order: []u8,
+    display: []DisplayCell,
     format_name: []const u8,
     loops: bool,
     active: bool = true,
@@ -559,8 +593,8 @@ const LdsSource = struct {
             v.vib_depth = 0;
         } else {
             v.vib_wait = patch.vib_delay;
-            v.vib_speed = (patch.vibrato >> 4) + 2;
-            v.vib_depth = (patch.vibrato & 15) + 1;
+            v.vib_speed = vibSpeed(patch.vibrato);
+            v.vib_depth = vibDepth(patch.vibrato);
         }
 
         v.mod_trem.arm((patch.trem_wait & 0xf0) >> 3, patch.mod_trem);
@@ -630,8 +664,8 @@ const LdsSource = struct {
                 .clear_portamento => v.pitch = 0,
                 .vibrato => {
                     v.vib_wait = 0;
-                    v.vib_speed = (c.arg >> 4) + 2;
-                    v.vib_depth = (c.arg & 15) + 1;
+                    v.vib_speed = vibSpeed(c.arg);
+                    v.vib_depth = vibDepth(c.arg);
                 },
                 .glide => v.glide = c.arg,
                 .finetune => v.finetune = c.arg,
@@ -642,8 +676,8 @@ const LdsSource = struct {
                     v.car_trem.hold = c.arg & 0x0f != 0;
                 },
                 .midi_prog, .midi_pan, .wait => {},
-                else => if (@intFromEnum(c.id) < 0xa0) {
-                    v.glide = @intFromEnum(c.id) & 0x1f;
+                else => if (@backingInt(c.id) < 0xa0) {
+                    v.glide = @backingInt(c.id) & 0x1f;
                 },
             },
         }
@@ -682,11 +716,11 @@ const LdsSource = struct {
             return;
         }
         if (v.vib_depth != 0) {
-            const swing: u16 = @as(u16, vib_wave[v.vib_phase & 0x3f]) * v.vib_depth;
+            const swing = vibSwing(v.vib_phase, v.vib_depth);
             const bent = if (v.vib_phase & 0x40 == 0)
-                v.pitch +% (swing >> 8)
+                v.pitch +% swing
             else
-                v.pitch -% (swing >> 8);
+                v.pitch -% swing;
             self.writePitch(chip, chan, mixArp(bent, arp), false);
             v.vib_phase +%= v.vib_speed;
             return;
@@ -852,29 +886,66 @@ const LdsSource = struct {
             .opl3 = false,
             .system = "OPL2",
             .loop = self.loops,
-            .visualizer = visualizer_name,
         };
     }
 
-    pub fn pos(self: *LdsSource) fmt.TrackerPos {
+    pub fn playhead(self: *LdsSource) view.Playhead {
         return .{
-            .order_pos = @truncate(self.cur_order),
+            .order = self.cur_order,
             .row = self.cur_row,
-            .pattern = @truncate(self.cur_order),
-            .speed = self.tempo,
+            .pattern = self.cur_order,
+            .tempo = self.tempo,
+            .pit = self.header.speed,
             .last_instrument = self.last_patch,
+            .flags = .{
+                .has_order = true,
+                .has_row = true,
+                .has_pattern = true,
+                .has_tempo = true,
+                .has_pit = true,
+            },
         };
     }
 
-    pub fn trackerView(self: *LdsSource) fmt.TrackerView {
+    pub fn patternCursors(self: *LdsSource) view.PatternCursorBank {
+        var cursors = view.PatternCursorBank{ .channels = voices };
+        for (cursors.slots[0..voices]) |*cursor| cursor.* = .{ .active = true, .order = self.cur_order, .pattern = self.cur_order, .row = self.cur_row };
+        return cursors;
+    }
+
+    pub fn patternView(self: *LdsSource) view.PatternView {
         return .{
             .ctx = self,
+            .grid = .per_channel_stream,
+            .occupancy = .packed_event,
+            .fnum_notes = &semitone_fnums,
+            .fnum_octave_offset = 1,
+            .columns = &lds_columns,
+            .effect_style = .raw_hex,
+            .cell_template = lds_cell_template,
             .channels = voices,
             .rows_per_pattern = self.header.rows,
             .num_patterns = @intCast(self.view_order.len),
-            .order = self.view_order,
-            .cell = cellAt,
-            .instrument = instrumentAt,
+            .cell = viewCell,
+        };
+    }
+
+    pub fn orderView(self: *LdsSource) view.OrderView {
+        return .{
+            .ctx = self,
+            .len = @intCast(self.view_order.len),
+            .kind = .per_channel,
+            .entry = ldsOrder,
+            .channelRef = ldsChannelRef,
+        };
+    }
+
+    pub fn instrumentBank(self: *LdsSource) view.InstrumentBank {
+        return .{
+            .ctx = self,
+            .count = @intCast(self.patches.len),
+            .get = ldsInstrument,
+            .macroStep = ldsMacroStep,
         };
     }
 
@@ -883,47 +954,131 @@ const LdsSource = struct {
         gpa.free(self.slots);
         gpa.free(self.pool);
         gpa.free(self.view_order);
+        gpa.free(self.display);
         gpa.destroy(self);
     }
 };
 
-fn cellAt(ptr: *anyopaque, pattern: u8, row: u8, chan: u8) fmt.TrackerCell {
+fn viewCell(ptr: *anyopaque, pattern: u16, row: u16, chan: u16) view.Cell {
     const self: *LdsSource = @ptrCast(@alignCast(ptr));
     if (pattern >= self.view_order.len or row >= self.header.rows or chan >= voices)
-        return .{ .kind = .empty };
-    const s = self.slots[@as(usize, pattern) * voices + chan];
-    var cur = Stream{};
-    var ev: Event = .empty;
-    var t: u8 = 0;
-    while (t <= row) : (t += 1) ev = cur.next(self.pool, s.start);
-    return switch (ev) {
-        .empty, .wait => .{ .kind = .empty },
-        .note => |n| blk: {
-            const voiced = s.voiced(n.degree, n.patch);
-            break :blk .{
-                .kind = .note,
-                .semitone = voiced.semitone,
-                .octave = voiced.octave,
-                .arg = voiced.patch,
-            };
+        return .{};
+    const cell = self.display[
+        (@as(usize, pattern) * voices + chan) * self.header.rows + row
+    ];
+    return switch (cell.tag) {
+        1 => .{
+            .note = .{ .pitch = .{ .semitone = cell.a, .octave = cell.b } },
+            .instrument = cell.c,
         },
-        .cmd => |c| if (c.id == .key_off)
-            .{ .kind = .note_off }
-        else
-            .{ .kind = .effect_only, .arg = @intFromEnum(c.id) },
+        2 => .{ .note = .off },
+        3 => .{ .effects = .{ .{ .cmd = cell.a, .param = cell.b }, .{} } },
+        else => .{},
     };
 }
 
-fn instrumentAt(ptr: *anyopaque, index: u8) fmt.InstrumentInfo {
+fn ldsOrder(ptr: *anyopaque, index: u16) view.OrderEntry {
     const self: *LdsSource = @ptrCast(@alignCast(ptr));
-    if (index >= self.patches.len) return std.mem.zeroes(fmt.InstrumentInfo);
-    const p = self.patches[index];
+    if (index >= self.view_order.len) return .{ .kind = .end };
+    return .{ .kind = .pattern, .pattern = index };
+}
+
+fn ldsChannelRef(ptr: *anyopaque, index: u16, chan: u16) view.ChannelRef {
+    const self: *LdsSource = @ptrCast(@alignCast(ptr));
+    if (index >= self.view_order.len or chan >= voices) return .{};
+    const s = self.slots[@as(usize, index) * voices + chan];
     return .{
-        .modulator = fmt.operatorParams(p.mod.misc, p.oplLevel(.mod), p.mod.ad, p.mod.sr, p.mod.wave),
-        .carrier = fmt.operatorParams(p.car.misc, p.oplLevel(.car), p.car.ad, p.car.sr, p.car.wave),
-        .feedback = @truncate((p.feedback >> 1) & 7),
-        .additive = p.additive(),
+        .start = s.start,
+        .pattern = index,
+        .transpose = signExtend7(s.transpose),
+        .target = if (s.transpose & 0x80 != 0) .instrument else .note,
     };
+}
+
+fn ldsInstrument(ptr: *anyopaque, index: u16) view.InstrumentInfo {
+    if (index > 255) return .{};
+    const self: *LdsSource = @ptrCast(@alignCast(ptr));
+    if (index >= self.patches.len) return .{};
+    const p = self.patches[index];
+    var result: view.InstrumentInfo = .{
+        .patch = .{ .opl_2op = .{
+            .ops = .{
+                fmt.operatorParams(p.mod.misc, p.oplLevel(.mod), p.mod.ad, p.mod.sr, p.mod.wave),
+                fmt.operatorParams(p.car.misc, p.oplLevel(.car), p.car.ad, p.car.sr, p.car.wave),
+                .{},
+                .{},
+            },
+            .op_count = 2,
+            .feedback = @truncate((p.feedback >> 1) & 7),
+            .additive = p.additive(),
+            .fine_tune = @bitCast(p.finetune),
+        } },
+        .macros = .{
+            .arpeggio_len = @min(p.arpeggio & 15, p.arp.len),
+            .arpeggio_speed = p.arpeggio >> 4,
+        },
+    };
+    if (p.vibrato != 0) {
+        result.macros.vibrato_len = vib_steps;
+        result.macros.vibrato_speed = vibSpeed(p.vibrato);
+        result.macros.vibrato_delay = p.vib_delay;
+    }
+    return result;
+}
+
+fn ldsMacroStep(ptr: *anyopaque, index: u16, kind: view.MacroKind, step: u16) view.MacroStep {
+    const self: *LdsSource = @ptrCast(@alignCast(ptr));
+    if (index >= self.patches.len) return .{};
+    const p = self.patches[index];
+    switch (kind) {
+        .fmreg => return .{},
+        .arpeggio => {
+            if (step >= @min(p.arpeggio & 15, p.arp.len)) return .{};
+            return .{ .empty = false, .arp_note = p.arp[step] };
+        },
+        .vibrato => {
+            if (p.vibrato == 0 or step >= vib_steps) return .{};
+            const phase: u8 = @intCast(step);
+            const swing: i8 = @intCast(vibSwing(phase, vibDepth(p.vibrato)));
+            return .{ .empty = false, .vib_delta = if (phase & 0x40 == 0) swing else -swing };
+        },
+    }
+}
+
+fn buildDisplay(
+    gpa: std.mem.Allocator,
+    header: Header,
+    slots: []const Slot,
+    pool: []const u16,
+    order_count: u16,
+) ![]DisplayCell {
+    const rows: usize = header.rows;
+    const count = @as(usize, order_count) * voices * rows;
+    const cells = try gpa.alloc(DisplayCell, count);
+    @memset(cells, .{});
+    for (0..order_count) |ord| {
+        for (0..voices) |ch| {
+            const s = slots[ord * voices + ch];
+            var cur = Stream{};
+            var r: usize = 0;
+            while (r < rows) : (r += 1) {
+                const ev = cur.next(pool, s.start);
+                const idx = (ord * voices + ch) * rows + r;
+                cells[idx] = switch (ev) {
+                    .empty, .wait => .{},
+                    .note => |nt| blk: {
+                        const voiced = s.voiced(nt.degree, nt.patch);
+                        break :blk .{ .tag = 1, .a = voiced.semitone, .b = voiced.octave, .c = voiced.patch };
+                    },
+                    .cmd => |c| if (c.id == .key_off)
+                        .{ .tag = 2 }
+                    else
+                        .{ .tag = 3, .a = @backingInt(c.id), .b = c.arg },
+                };
+            }
+        }
+    }
+    return cells;
 }
 
 fn hasJump(pool: []const u16) bool {
@@ -936,7 +1091,7 @@ fn hasJump(pool: []const u16) bool {
     return false;
 }
 
-fn load(
+pub fn load(
     gpa: std.mem.Allocator,
     data: []const u8,
     ctx: fmt.LoadContext,
@@ -977,6 +1132,9 @@ fn load(
     errdefer gpa.free(view_order);
     for (view_order, 0..) |*id, i| id.* = @intCast(i);
 
+    const display = try buildDisplay(gpa, header, slots, pool, lay.order_count);
+    errdefer gpa.free(display);
+
     const src = try gpa.create(LdsSource);
     errdefer gpa.destroy(src);
     src.* = .{
@@ -987,29 +1145,24 @@ fn load(
         .slots = slots,
         .pool = pool,
         .view_order = view_order,
+        .display = display,
         .format_name = nameForExt(ctx.ext),
         .loops = hasJump(pool),
     };
     src.rewind(ctx.chip);
     ctx.chip.flush();
-    return fmt.MusicSource.init(src);
+    return fmt.MusicSource.init(src, visualizer_name);
 }
 
 fn nameForExt(ext: []const u8) []const u8 {
     return if (std.ascii.eqlIgnoreCase(ext, ".ld0")) "LD0" else "LDS";
 }
 
-fn labelForPath(path: []const u8) []const u8 {
+pub fn labelForPath(path: []const u8) []const u8 {
     return nameForExt(fmt.extensionOf(path));
 }
 
-pub const format = fmt.Format{
-    .name = "LDS",
-    .extensions = &.{ ".lds", ".ld0" },
-    .visualizer = visualizer_name,
-    .label_for_path = labelForPath,
-    .load = load,
-};
+pub const format = fmt.Format.init(@This());
 
 // --- tests -------------------------------------------------------------------
 
@@ -1018,7 +1171,7 @@ fn noteWord(degree: u8, patch: u8) u16 {
 }
 
 fn cmdWord(id: Cmd, arg: u8) u16 {
-    return (@as(u16, @intFromEnum(id)) << 8) | arg;
+    return (@as(u16, @backingInt(id)) << 8) | arg;
 }
 
 fn waitWord(extra: u8) u16 {
@@ -1134,13 +1287,69 @@ test "lds tracker cells follow packed waits and notes" {
     }, ".lds");
     defer src.deinit(gpa);
 
-    const view = src.trackerView().?;
-    const note = view.cell(view.ctx, 0, 0, 0);
-    try std.testing.expectEqual(fmt.TrackerCell.Kind.note, note.kind);
-    try std.testing.expectEqual(@as(u8, 0), note.semitone);
-    try std.testing.expectEqual(@as(u8, 4), note.octave);
-    try std.testing.expectEqual(fmt.TrackerCell.Kind.empty, view.cell(view.ctx, 0, 1, 0).kind);
-    try std.testing.expectEqual(fmt.TrackerCell.Kind.note_off, view.cell(view.ctx, 0, 3, 0).kind);
+    const pv = src.views().pattern.?;
+    try std.testing.expectEqual(view.Note.none, pv.cell(pv.ctx, 0, 1, 0).note);
+    try std.testing.expectEqual(view.Note.off, pv.cell(pv.ctx, 0, 3, 0).note);
+    const cell = pv.cell(pv.ctx, 0, 0, 0);
+    try std.testing.expect(cell.note == .pitch);
+    try std.testing.expectEqual(@as(?u16, 1), cell.instrument);
+    const ph = src.playhead().?;
+    try std.testing.expect(ph.flags.has_pit);
+    try std.testing.expect(ph.flags.has_tempo);
+    try std.testing.expect(!ph.flags.has_speed);
+}
+
+test "lds channel refs report their order slot as the pattern" {
+    const gpa = std.testing.allocator;
+    const src = try loadSong(gpa, .{ .orders = &.{ blank_row, blank_row, blank_row } }, ".lds");
+    defer src.deinit(gpa);
+
+    const ov = src.views().order.?;
+    const channel_ref = ov.channelRef.?;
+    for (0..ov.len) |index| {
+        const order: u16 = @intCast(index);
+        for (0..voices) |ch| {
+            try std.testing.expectEqual(ov.entry(ov.ctx, order).pattern, channel_ref(ov.ctx, order, @intCast(ch)).pattern);
+        }
+    }
+    try std.testing.expectEqual(@as(u16, 2), channel_ref(ov.ctx, 2, 8).pattern);
+}
+
+test "lds publishes the played vibrato and arpeggio as macros" {
+    const gpa = std.testing.allocator;
+    var vibrato = Patch{};
+    vibrato.vibrato = 0x35;
+    vibrato.vib_delay = 7;
+    vibrato.arpeggio = 0x20;
+    var arpeggio = Patch{};
+    arpeggio.vib_delay = 9;
+    arpeggio.arpeggio = 0x12;
+    arpeggio.arp[0] = 4;
+    arpeggio.arp[1] = 7;
+    const src = try loadSong(gpa, .{ .patches = &.{ vibrato, arpeggio } }, ".lds");
+    defer src.deinit(gpa);
+
+    const bank = src.views().instruments.?;
+    const step = bank.macroStep.?;
+    const vib = bank.get(bank.ctx, 0);
+    try std.testing.expect(vib.hasMacros());
+    try std.testing.expectEqual(@as(u8, 0), vib.macros.arpeggio_len);
+    try std.testing.expectEqual(@as(u8, vib_steps), vib.macros.vibrato_len);
+    try std.testing.expectEqual(@as(u8, 5), vib.macros.vibrato_speed);
+    try std.testing.expectEqual(@as(u8, 7), vib.macros.vibrato_delay);
+    try std.testing.expectEqual(@as(i8, 0), step(bank.ctx, 0, .vibrato, 0).vib_delta);
+    try std.testing.expectEqual(@as(i8, 5), step(bank.ctx, 0, .vibrato, 32).vib_delta);
+    try std.testing.expectEqual(@as(i8, -5), step(bank.ctx, 0, .vibrato, 96).vib_delta);
+    try std.testing.expect(step(bank.ctx, 0, .vibrato, vib_steps).empty);
+    try std.testing.expect(step(bank.ctx, 0, .arpeggio, 0).empty);
+
+    const arp = bank.get(bank.ctx, 1);
+    try std.testing.expect(arp.hasMacros());
+    try std.testing.expectEqual(@as(u8, 0), arp.macros.vibrato_len);
+    try std.testing.expectEqual(@as(u8, 0), arp.macros.vibrato_delay);
+    try std.testing.expectEqual(@as(u8, 7), step(bank.ctx, 1, .arpeggio, 1).arp_note);
+    try std.testing.expect(step(bank.ctx, 1, .arpeggio, 2).empty);
+    try std.testing.expect(step(bank.ctx, 1, .vibrato, 0).empty);
 }
 
 test "lds overlong arpeggio drains" {

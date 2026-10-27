@@ -19,6 +19,9 @@ zig-pkg/
 .playtest/
 sehnsucht-crash.log
 
+# For testing only
+music/
+
 # Editor / OS noise
 .DS_Store
 Thumbs.db

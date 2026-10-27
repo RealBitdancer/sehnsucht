@@ -82,6 +82,8 @@ prevents command bytes in short headers from being mistaken for chip clocks.
 
 Gzip detection uses the two magic bytes `1F 8B`. Raw input is copied without
 decompression. Decompressed data is the VGM file described above.
+The expanded size is bounded. The gzip CRC32 and size footer must match the
+decoded bytes. A truncated or corrupt stream fails with `GzipFailed`.
 
 ## Decoding
 
@@ -100,15 +102,18 @@ the value with `0x3FFFFFFF`. At least one resulting value must be nonzero.
 Other chip clocks may be present. Their commands are skipped. A file without a
 qualifying OPL clock fails with `NonOplVgm`.
 
-All supported chip types feed one emulated OPL device. A second OPL2-family
-instance maps to bank 1. A second OPL3 instance is dropped: both banks already
-belong to the first chip, and folding a second chip onto them would let the two
-write streams fight over the same registers. The first chip plays correctly and
-the second stays silent.
+The YMF262 clock's bit 30 declares a second OPL3 chip. Both chips have their own
+Opal instance, register banks, mode bits, panning, and four-operator pairs.
+The engine advances them over the same waits and mixes their stereo output.
+One chip cannot overwrite the other's registers. The rack exposes all 36
+voices, with chip and channel labels and horizontal paging.
 
-Every OPL VGM enables NEW (`0x105` = `1`) at load so a second OPL2 on
-bank 1 is a real second chip. Writes to `C0`..`C8` (either bank) get
-CHA/CHB set (`0x30`). Enabling NEW without those bits is silent.
+A second OPL2-family instance still maps to bank 1 of the first Opal instance.
+
+OPL2-family captures enable NEW (`0x105` = `1`) at load so a second OPL2 on
+bank 1 is a real second chip. Their writes to `C0`..`C8` receive CHA/CHB
+(`0x30`). Native OPL3 captures control NEW and panning through their own
+register writes, including deliberate channel muting.
 
 ### OPL register writes
 
@@ -116,12 +121,58 @@ Each command below is three bytes: opcode, register, value.
 
 | Opcode | Address written |
 |-------:|-----------------|
-| `0x5A`, `0x5B`, `0x5C`, `0x5E` | `register` |
+| `0x5A`, `0x5B`, `0x5E` | `register` |
+| `0x5C` | `register`, or `0x100 + register` beside a YM3526 or YM3812 |
 | `0x5F` | `0x100 + register` |
 | `0xAA`, `0xAB`, `0xAC` | `0x100 + register` |
-| `0xAE`, `0xAF` | None (second YMF262, skipped) |
+| `0xAE` | Second chip, `register` |
+| `0xAF` | Second chip, `0x100 + register` |
 
-Y8950 ADPCM data blocks are skipped. Only its FM register writes are played.
+Second-YMF262 writes are ignored when the header does not declare that chip.
+Internally, register bit 9 selects the second Opal instance. Each instance
+receives only the low nine bits. The single-device adapter rejects addresses
+outside its own banks.
+
+### Y8950 ADPCM
+
+Y8950 writes split between FM and the Delta-T decoder in `src/y8950.zig`.
+Register `0x08` shares FM and ADPCM controls. Its high two bits reach FM and
+its low bits select ADPCM memory and conversion options.
+
+Playback supports external sample memory and CPU-fed bytes through `0x0F`.
+Start, reset, repeat, speaker mute, Delta-N frequency, and linear volume are
+applied at the recorded command times. CPU writes in memory-transfer mode
+populate sample RAM. Address units are four bytes for 1-bit DRAM and 32 bytes
+for ROM or 8-bit DRAM. The stored end address includes its final address unit.
+Registers `0x13` and `0x14` are the memory limit. Reaching that unit wraps the
+address to zero. An unwritten limit stays open (`0xFFFF`). Unpopulated memory
+reads as `0xFF`.
+
+Each declared Y8950 owns at most 2 MiB of sample memory. A dual-Y8950 header
+creates two independent ADPCM voices. Allocation occurs during loading.
+Playback allocates nothing. ADC recording and external input are not part of
+log playback. Direct DAC conversion and VGM DAC stream-control commands are
+not interpreted.
+
+The decoder advances at the header clock divided by 72. Delta-N supplies the
+fractional nibble rate. Prediction, adaptive step size, and interpolation run
+at that clock, then produce output at the device sample rate. A clock above
+64 MHz or a zero output rate is rejected. This bounds work for malformed
+headers while leaving ample room around the normal Y8950 clock.
+
+The PCM renderer adds both ADPCM voices to the two FM outputs before final
+clipping and the player's volume controls. Pause stops all synthesis.
+Stream's left rack shows sample activity, effective rate, volume, and level.
+Memory playback adds sample addresses and a position bar. Short or narrow
+windows use compact readouts. Inspect retains the full memory or CPU mode,
+repeat, speaker state, and sample addresses.
+ADPCM register writes enter the same history without being sent to Opal.
+
+Validation compared 16,384 generated samples with the independent
+[ymfm Delta-T implementation](https://github.com/aaronsgiles/ymfm/blob/main/src/ymfm_adpcm.cpp).
+The comparison covered both memory address units, CPU-fed bytes, repeat,
+frequency and volume changes, reset, and restart. Output matched exactly.
+The reference program and generated samples are not part of the repository.
 
 ### Wait commands
 
@@ -155,8 +206,16 @@ data_size = stored_size & 0x7FFFFFFF
 next      = command_position + 7 + data_size
 ```
 
-sehnsucht skips every block type. It does not validate the `0x66` marker or
-interpret `tt`.
+Type `0x88` supplies Y8950 sample memory. Its payload starts with the total
+memory size and destination byte offset, both little-endian `u32`, followed
+by sample bytes. The high bit of the block size selects the second Y8950.
+The destination and payload must fit the declared memory size and the chip's
+2 MiB address space. Blocks are copied when their commands execute, so later
+uploads and loops retain their recorded order.
+
+Y8950 files validate block markers, sizes, and sample-memory ranges during
+loading. Playback bounds-checks copies as well, including loop destinations.
+Other block types are skipped.
 
 Opcode `0x68` is a fixed 12-byte PCM RAM write command. It is also skipped.
 
@@ -224,11 +283,16 @@ does for other formats that omit `durationFrames`.
 
 ## Playback
 
-VGM uses the stream visualizer. Supported OPL writes are sent to one emulated
-device using the bank mapping above. Every OPL VGM enables NEW at load.
-Writes to `C0`..`C8` get CHA/CHB (`0x30`). A channel that never writes C0
-stays silent. End commands and valid loop points follow the rules under
+VGM uses the stream visualizer. Supported OPL writes use the chip and bank
+mapping above. OPL2 compatibility writes and native
+OPL3 mode follow the rules under [OPL scope](#opl-scope).
+End commands and valid loop points follow the rules under
 [End and loop handling](#end-and-loop-handling).
+
+The dump view reports chip class, clock, loop status, register-write count,
+and the number of ADPCM voices.
+The count uses the same command lengths as playback and excludes waits and
+commands for unsupported chips. The live rack shows physical OPL voices.
 
 Labels: `VGM` or `VGZ` from the path.
 
@@ -250,13 +314,13 @@ The body must fit in the file. The strings are:
 | Index | Meaning | Used by sehnsucht |
 |------:|---------|-------------------|
 | 0 | English title | Yes |
-| 1 | Japanese title | No |
+| 1 | Japanese title | Fallback |
 | 2 | English game | Yes |
-| 3 | Japanese game | No |
+| 3 | Japanese game | Fallback |
 | 4 | English system | Yes |
-| 5 | Japanese system | No |
+| 5 | Japanese system | Fallback |
 | 6 | English artist | Yes |
-| 7 | Japanese artist | No |
+| 7 | Japanese artist | Fallback |
 | 8 | Release date | No |
 | 9 | VGM creator | No |
 | 10 | Notes | No |
@@ -266,8 +330,9 @@ code units are skipped. A bad GD3 magic or range does not prevent the music
 from loading. An allocation failure while converting the strings fails the
 load (`error.OutOfMemory`).
 
-English GD3 title, game, system, and artist fields are shown when present. A
-GD3 title is embedded metadata.
+English GD3 title, game, system, and artist fields are shown when present.
+Each empty English field falls back to its Japanese counterpart. A GD3
+title is embedded metadata.
 
 ## Errors
 
@@ -278,12 +343,6 @@ GD3 title is embedded metadata.
 | `NonOplVgm` | No supported OPL clock appears before command data |
 | `GzipFailed` | Gzip stream is invalid |
 | `StreamTooLong` | Decompressed data exceeds 16 MiB |
-| `OutOfMemory` | Allocation failed (inflate or GD3 strings) |
-
-## Compatibility notes
-
-The decoder targets VGM versions 1.00 through 1.71. Later versions remain
-readable when they use the same command sizes and header rules.
-
-[vgz2dro](https://github.com/RealBitdancer/vgz2dro) converts OPL-family VGM and
-VGZ files to DRO.
+| `InvalidVgmClock` | Y8950 clock exceeds 64 MHz or output rate is zero |
+| `InvalidVgmDataBlock` | Truncated block, invalid marker, or sample memory range outside the declared size |
+| `OutOfMemory` | Allocation failed (inflate, sample memory, or GD3 strings) |

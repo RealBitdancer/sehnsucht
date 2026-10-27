@@ -7,10 +7,14 @@ const std = @import("std");
 const opal = @import("opal");
 
 const fmt = @import("../format.zig");
+const view = @import("../view.zig");
 const chip_adapter = @import("../chip.zig");
 
 const dro_magic = "DBRAWOPL";
+pub const format_name = "DRO";
+pub const extensions = &.{".dro"};
 pub const visualizer_name = "stream";
+pub const view_caps = view.ViewCaps{ .dump = true };
 
 const Version = enum {
     v1,
@@ -73,23 +77,39 @@ const DroSource = struct {
     codemap: []const u8 = &.{},
     frac: u32 = 0,
     total_ms: u64 = 0,
+    write_count: u32 = 0,
     title: []const u8,
 
     fn framesForMs(self: *DroSource, ms: u32) u64 {
         return fmt.rescale(ms, 1000, self.sample_rate, &self.frac);
     }
 
+    const max_ops_per_step: u32 = 4096;
+
     pub fn step(self: *DroSource, chip: fmt.Chip) fmt.StepResult {
-        return switch (self.version) {
-            .v1 => self.stepV1(chip),
-            .v2 => self.stepV2(chip),
-        };
+        var ops: u32 = 0;
+        while (ops < max_ops_per_step) : (ops += 1) {
+            const r = switch (self.version) {
+                .v1 => self.stepV1(chip),
+                .v2 => self.stepV2(chip),
+            };
+            if (r.frames != 0 or r.done) return r;
+        }
+        return .{ .frames = 0 };
     }
 
     fn rewindDone(self: *DroSource) fmt.StepResult {
         self.pos = 0;
         self.bank = 0;
         return .{ .frames = 0, .done = true };
+    }
+
+    fn write(self: *const DroSource, chip: fmt.Chip, addr: u16, value: u8) void {
+        switch (self.hardware) {
+            .opl3 => chip.writeReg(addr, value),
+            .dual_opl2 => chip_adapter.writeOpl2(chip, addr, value),
+            .opl2 => chip.writeReg(addr, chip_adapter.withStereoC0(addr, value)),
+        }
     }
 
     fn stepV1(self: *DroSource, chip: fmt.Chip) fmt.StepResult {
@@ -120,14 +140,14 @@ const DroSource = struct {
             0x04 => {
                 if (self.pos + 1 >= self.data.len) return self.rewindDone();
                 const addr = self.bank + self.data[self.pos];
-                chip.writeReg(addr, chip_adapter.withStereoC0(addr, self.data[self.pos + 1]));
+                self.write(chip, addr, self.data[self.pos + 1]);
                 self.pos += 2;
                 return .{ .frames = 0 };
             },
             else => {
                 if (self.pos >= self.data.len) return self.rewindDone();
                 const addr = self.bank + cmd;
-                chip.writeReg(addr, chip_adapter.withStereoC0(addr, self.data[self.pos]));
+                self.write(chip, addr, self.data[self.pos]);
                 self.pos += 1;
                 return .{ .frames = 0 };
             },
@@ -155,7 +175,7 @@ const DroSource = struct {
         }
         if (idx >= self.codemap.len) return self.rewindDone();
         const addr = reg_bank + self.codemap[idx];
-        chip.writeReg(addr, chip_adapter.withStereoC0(addr, value));
+        self.write(chip, addr, value);
         return .{ .frames = 0 };
     }
 
@@ -166,12 +186,22 @@ const DroSource = struct {
             .opl3 = self.hardware == .opl3,
             .system = self.hardware.label(),
             .loop = true,
-            .visualizer = visualizer_name,
         };
     }
 
     pub fn durationFrames(self: *DroSource) u64 {
         return self.total_ms * self.sample_rate / 1000;
+    }
+
+    pub fn dumpView(self: *DroSource) view.DumpView {
+        return .{
+            .chip = switch (self.hardware) {
+                .opl2 => .opl2,
+                .dual_opl2 => .dual_opl2,
+                .opl3 => .opl3,
+            },
+            .write_count = self.write_count,
+        };
     }
 
     pub fn deinit(self: *DroSource, gpa: std.mem.Allocator) void {
@@ -227,7 +257,53 @@ fn totalMs(
     return ms;
 }
 
-fn load(
+fn countWrites(
+    stream: []const u8,
+    version: Version,
+    short_code: u8,
+    long_code: u8,
+    codemap_len: usize,
+) u32 {
+    var n: u32 = 0;
+    var pos: usize = 0;
+    switch (version) {
+        .v1 => while (pos < stream.len) {
+            const cmd = stream[pos];
+            pos += 1;
+            switch (cmd) {
+                0x00 => {
+                    if (pos >= stream.len) break;
+                    pos += 1;
+                },
+                0x01 => {
+                    if (pos + 1 >= stream.len) break;
+                    pos += 2;
+                },
+                0x02, 0x03 => {},
+                0x04 => {
+                    if (pos + 1 >= stream.len) break;
+                    pos += 2;
+                    n += 1;
+                },
+                else => {
+                    if (pos >= stream.len) break;
+                    pos += 1;
+                    n += 1;
+                },
+            }
+        },
+        .v2 => while (pos + 1 < stream.len) {
+            const index = stream[pos];
+            pos += 2;
+            if (index == short_code or index == long_code) continue;
+            if ((index & 0x7F) >= codemap_len) break;
+            n += 1;
+        },
+    }
+    return n;
+}
+
+pub fn load(
     gpa: std.mem.Allocator,
     data: []const u8,
     ctx: fmt.LoadContext,
@@ -261,7 +337,7 @@ fn makeSource(
     const copy = try gpa.dupe(u8, stream);
     errdefer gpa.free(copy);
     const hardware = opts.version.hardware(opts.hw_code);
-    const title = try std.fmt.allocPrint(gpa, "{s} ({s})", .{ opts.version.label(), hardware.label() });
+    const title = try gpa.print("{s} ({s})", .{ opts.version.label(), hardware.label() });
     errdefer gpa.free(title);
     const src = try gpa.create(DroSource);
     errdefer gpa.destroy(src);
@@ -274,11 +350,12 @@ fn makeSource(
         .long_delay_code = opts.long_code,
         .codemap = opts.codemap,
         .total_ms = totalMs(copy, opts.version, opts.short_code, opts.long_code, opts.codemap.len),
+        .write_count = countWrites(copy, opts.version, opts.short_code, opts.long_code, opts.codemap.len),
         .title = title,
     };
-    if (hardware == .dual_opl2 or hardware == .opl3) chip_adapter.enableNew(ctx.chip);
+    if (hardware == .dual_opl2) chip_adapter.enableNew(ctx.chip);
     ctx.chip.flush();
-    return fmt.MusicSource.init(src);
+    return fmt.MusicSource.init(src, visualizer_name);
 }
 
 fn clampToDeclaredLength(stream: []const u8, length_bytes: u32) []const u8 {
@@ -331,12 +408,7 @@ fn loadV2(gpa: std.mem.Allocator, data: []const u8, ctx: fmt.LoadContext) !fmt.M
     });
 }
 
-pub const format = fmt.Format{
-    .name = "DRO",
-    .extensions = &.{".dro"},
-    .visualizer = visualizer_name,
-    .load = load,
-};
+pub const format = fmt.Format.init(@This());
 
 // --- tests -------------------------------------------------------------------
 
@@ -367,6 +439,7 @@ test "dro v1 register and delay sequence" {
     defer src.deinit(gpa);
 
     try std.testing.expectEqualStrings("stream", src.info().visualizer);
+    try std.testing.expectEqual(@as(u32, 2), src.views().dump.?.write_count);
 
     const drained = fmt.testDrain(src, chip_adapter.fromOpal(&chip), 100);
     try std.testing.expect(drained.writes >= 2);
@@ -460,6 +533,8 @@ test "dro v2 codemap, bank bit, and delay codes" {
     try std.testing.expect(inf.opl3);
     try std.testing.expectEqual(@as(?u64, 257), src.durationFrames());
 
+    try std.testing.expectEqual(@as(u32, 3), src.views().dump.?.write_count);
+
     const drained = fmt.testDrain(src, chip_adapter.fromOpal(&chip), 100);
     try std.testing.expectEqual(@as(u64, 257), drained.frames);
     try std.testing.expectEqual(@as(usize, 3), drained.writes);
@@ -477,6 +552,38 @@ test "dro v2 hostile codemap index ends the pass instead of crashing" {
 
     const r = src.step(chip_adapter.fromOpal(&chip));
     try std.testing.expect(r.done);
+}
+
+test "dro preserves native OPL3 panning in both versions" {
+    const gpa = std.testing.allocator;
+    const Capture = struct {
+        value: u8 = 0xff,
+        mode: u8 = 0,
+        fn write(ptr: *anyopaque, reg: u16, value: u8) void {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            if (reg == 0xc0) self.value = value;
+            if (reg == 0x105) self.mode = value;
+        }
+        fn flush(_: *anyopaque) void {}
+    };
+    for ([_]Version{ .v1, .v2 }) |version| {
+        for ([_]u8{ 0, 0x10, 0x20, 0x30 }) |panning| {
+            const data = if (version == .v1) try makeTestDroV1(gpa) else try makeTestDroV2(gpa, &.{ 0x80, 1, 1, panning }, &.{ 5, 0xc0 });
+            defer gpa.free(data);
+            if (version == .v1) {
+                data[20] = 1;
+                @memcpy(data[24..32], &[_]u8{ 3, 4, 5, 1, 2, 0xc0, panning, 2 });
+            }
+            var capture: Capture = .{};
+            const chip: fmt.Chip = .{ .ptr = &capture, .vtable = &.{ .writeReg = Capture.write, .flush = Capture.flush } };
+            const src = (try load(gpa, data, .{ .sample_rate = 44100, .chip = chip, .ext = ".dro" })).?;
+            defer src.deinit(gpa);
+            try std.testing.expectEqual(@as(u8, 0), capture.mode);
+            _ = fmt.testDrain(src, chip, 100);
+            try std.testing.expectEqual(@as(u8, 1), capture.mode);
+            try std.testing.expectEqual(panning, capture.value);
+        }
+    }
 }
 
 test "dro rejects non-magic" {
@@ -510,4 +617,42 @@ test "dro ms to frames frac-carry at 44100" {
 
     const drained = fmt.testDrain(src, chip_adapter.fromOpal(&chip), 5000);
     try std.testing.expectEqual(@as(u64, 44100), drained.frames);
+}
+
+test "dro keeps a dual OPL2's timer writes off the pairing registers but not an OPL2 capture's" {
+    const gpa = std.testing.allocator;
+    const Capture = struct {
+        regs: [0x200]u8 = @splat(0),
+        fn write(ptr: *anyopaque, reg: u16, value: u8) void {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            if (reg < self.regs.len) self.regs[reg] = value;
+        }
+        fn flush(_: *anyopaque) void {}
+    };
+    for ([_]u8{ 0, 1 }) |hw_code| {
+        const data = try makeTestDroV2(gpa, &.{ 0x80, 0x60, 0x81, 0x01, 0x00, 0x01 }, &.{ 0x04, 0x05 });
+        defer gpa.free(data);
+        data[20] = hw_code;
+        var capture: Capture = .{};
+        const chip: fmt.Chip = .{ .ptr = &capture, .vtable = &.{ .writeReg = Capture.write, .flush = Capture.flush } };
+        const src = (try load(gpa, data, .{ .sample_rate = 44100, .chip = chip, .ext = ".dro" })).?;
+        defer src.deinit(gpa);
+        capture.regs = @splat(0);
+        _ = fmt.testDrain(src, chip, 100);
+        const dual = hw_code == 1;
+        try std.testing.expectEqual(@as(u8, if (dual) 0 else 0x60), capture.regs[0x104]);
+        try std.testing.expectEqual(@as(u8, if (dual) 0 else 0x01), capture.regs[0x105]);
+    }
+}
+
+test "dro applies a burst of writes in one step" {
+    const gpa = std.testing.allocator;
+    var pairs: [2000 * 2 + 2]u8 = undefined;
+    for (0..2000) |i| @memcpy(pairs[i * 2 ..][0..2], &[_]u8{ 0x00, @truncate(i) });
+    @memcpy(pairs[4000..], &[_]u8{ 0xFE, 0x00 });
+    const data = try makeTestDroV2(gpa, &pairs, &.{0x20});
+    defer gpa.free(data);
+    const src = (try load(gpa, data, .{ .sample_rate = 44100, .chip = fmt.noop_chip, .ext = ".dro" })).?;
+    defer src.deinit(gpa);
+    try std.testing.expect(src.step(fmt.noop_chip).frames > 0);
 }

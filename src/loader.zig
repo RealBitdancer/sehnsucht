@@ -16,6 +16,7 @@ const Loaded = @import("player.zig").Loaded;
 const assembleTrack = @import("player.zig").assembleTrack;
 const remote = @import("remote.zig");
 const ui = @import("ui.zig");
+const view = @import("view.zig");
 
 /// Substitute selection after a failed load walks the play order in the
 /// job's direction, so a shuffle pass or a backward skip scans the entries
@@ -32,7 +33,7 @@ fn nextCandidate(
 ) ?usize {
     const n = order.len;
     if (n == 0) return null;
-    var pos = std.mem.indexOfScalar(usize, order, from) orelse 0;
+    var pos = std.mem.findScalar(usize, order, from) orelse 0;
     var steps: usize = 0;
     while (steps < n) : (steps += 1) {
         switch (dir) {
@@ -62,9 +63,7 @@ fn nextCandidate(
 
 pub const FetchState = struct {
     req_path: ?[]const u8 = null,
-    req_sibling_path: ?[]const u8 = null,
-    req_sibling_alt_path: ?[]const u8 = null,
-    req_sibling2_path: ?[]const u8 = null,
+    req_companions: format.CompanionPaths = .{},
     req_seq: std.atomic.Value(u64) = .init(0),
     abort: std.atomic.Value(bool) = .init(false),
     running: std.atomic.Value(bool) = .init(true),
@@ -74,6 +73,8 @@ pub const FetchState = struct {
     sibling: ?[]u8 = null,
     sibling2: ?[]u8 = null,
     sibling_is_alt: bool = false,
+    cache: ?*remote.ArchiveCache = null,
+    resources: std.ArrayList(format.Resource) = .empty,
 };
 
 /// A `detached` job carries its own path and an empty `tried` list, so a
@@ -87,9 +88,7 @@ const LoadJob = struct {
     idx: usize,
     seq: u64,
     path: []u8,
-    sibling_path: ?[]u8,
-    sibling_alt_path: ?[]u8,
-    sibling2_path: ?[]u8,
+    companions: format.CompanionPaths,
     tried: []bool,
     track_index: u32 = 0,
     skip_n: u32 = 0,
@@ -100,13 +99,61 @@ const LoadJob = struct {
 
 pub const PollResult = enum { none, startup_failed };
 
+const VisualSnapshot = struct {
+    playhead: view.Playhead,
+    channels: view.ChannelStateBank,
+    pattern_cursors: view.PatternCursorBank,
+    sequence: view.SequenceStateBank,
+    chip: view.ChipSnapshot,
+    pcm: view.PcmState,
+    write_log: [view.write_log_cap]u32,
+    write_log_i: u32,
+
+    fn capture(bridge: *const Bridge) VisualSnapshot {
+        var write_log: [view.write_log_cap]u32 = undefined;
+        for (&write_log, &bridge.write_log) |*slot, *logged| slot.* = logged.load(.acquire);
+        return .{
+            .playhead = bridge.playhead.read(),
+            .channels = bridge.channels.read(),
+            .pattern_cursors = bridge.pattern_cursors.read(),
+            .sequence = bridge.sequence.read(),
+            .chip = bridge.chip.read(),
+            .pcm = bridge.pcm.read(),
+            .write_log = write_log,
+            .write_log_i = bridge.write_log_i.load(.acquire),
+        };
+    }
+
+    fn restore(self: *const VisualSnapshot, bridge: *Bridge) void {
+        bridge.playhead.write(self.playhead);
+        bridge.channels.write(self.channels);
+        bridge.pattern_cursors.write(self.pattern_cursors);
+        bridge.sequence.write(self.sequence);
+        bridge.chip.write(self.chip);
+        bridge.pcm.write(self.pcm);
+        for (&bridge.write_log, &self.write_log) |*slot, value| slot.store(value, .release);
+        bridge.write_log_i.store(self.write_log_i, .release);
+    }
+};
+
+fn freeResources(gpa: std.mem.Allocator, resources: std.ArrayList(format.Resource)) void {
+    for (resources.items) |resource| {
+        gpa.free(resource.name);
+        gpa.free(resource.data);
+    }
+    var owned = resources;
+    owned.deinit(gpa);
+}
+
 pub const Loader = struct {
     gpa: std.mem.Allocator,
     io: Io,
+    zip_cache: remote.ArchiveCache = .{},
     state: FetchState = .{},
     seq: u64 = 0,
     job: ?LoadJob = null,
     queued: ?Queued = null,
+    resume_visuals: ?VisualSnapshot = null,
     startup_show_playlist: bool = false,
     startup_errors: []?anyerror = &.{},
 
@@ -136,23 +183,49 @@ pub const Loader = struct {
     // Companions read here stay in `st` even when a later read fails: `poll`
     // takes and frees them no matter how `result` came out.
     fn fetchEntry(gpa: std.mem.Allocator, io: Io, st: *FetchState) anyerror![]u8 {
-        const bytes = try remote.readPathAlloc(gpa, io, st.req_path.?, &st.abort);
+        const bytes = try remote.readPathAlloc(gpa, io, st.req_path.?, &st.abort, st.cache);
         errdefer gpa.free(bytes);
-        if (st.req_sibling_path) |p| {
-            st.sibling = remote.readPathAlloc(gpa, io, p, &st.abort) catch |err| blk: {
+        if (st.req_companions.sibling) |p| {
+            st.sibling = remote.readPathAlloc(gpa, io, p, &st.abort, st.cache) catch |err| blk: {
                 if (err == error.Canceled or err == error.OutOfMemory) return err;
-                const alt = st.req_sibling_alt_path orelse return err;
+                const alt = st.req_companions.sibling_alt orelse return err;
                 st.sibling_is_alt = true;
-                break :blk try remote.readPathAlloc(gpa, io, alt, &st.abort);
+                break :blk try remote.readPathAlloc(gpa, io, alt, &st.abort, st.cache);
             };
         }
-        if (st.req_sibling2_path) |p| {
-            st.sibling2 = remote.readPathAlloc(gpa, io, p, &st.abort) catch |err| blk: {
+        if (st.req_companions.sibling2) |p| {
+            st.sibling2 = remote.readPathAlloc(gpa, io, p, &st.abort, st.cache) catch |err| blk: {
                 if (err == error.Canceled or err == error.OutOfMemory) return err;
                 // The decoder decides whether a missing second companion is
                 // fatal, so absence travels as null rather than a load error.
                 break :blk null;
             };
+        }
+        const requests = try format.resourceRequests(gpa, st.req_path.?, bytes);
+        defer {
+            for (requests) |res_request| res_request.deinit(gpa);
+            gpa.free(requests);
+        }
+        var total: usize = 0;
+        for (requests) |res_request| {
+            var resource: ?[]u8 = null;
+            for (res_request.paths) |path| {
+                resource = remote.readPathAlloc(gpa, io, path, &st.abort, st.cache) catch |err| {
+                    if (err == error.Canceled or err == error.OutOfMemory) return err;
+                    continue;
+                };
+                break;
+            }
+            const data = resource orelse {
+                if (res_request.required) return error.MissingResource;
+                continue;
+            };
+            errdefer gpa.free(data);
+            total += data.len;
+            if (total > 4 * format.max_input_bytes) return error.ResourceLimit;
+            const name = try gpa.dupe(u8, res_request.name);
+            errdefer gpa.free(name);
+            try st.resources.append(gpa, .{ .name = name, .data = data });
         }
         return bytes;
     }
@@ -164,9 +237,7 @@ pub const Loader = struct {
 
     fn publishFetch(self: *Loader, seq: u64, job: *const LoadJob) void {
         self.state.req_path = job.path;
-        self.state.req_sibling_path = job.sibling_path;
-        self.state.req_sibling_alt_path = job.sibling_alt_path;
-        self.state.req_sibling2_path = job.sibling2_path;
+        self.state.req_companions = job.companions;
         self.state.sibling = null;
         self.state.sibling2 = null;
         self.state.sibling_is_alt = false;
@@ -176,12 +247,16 @@ pub const Loader = struct {
 
     fn startJob(self: *Loader, player: *Player, model: *ui.Model, job: LoadJob) void {
         player.engine.stop();
+        if (player.src != null and self.resume_visuals == null) {
+            self.resume_visuals = VisualSnapshot.capture(player.bridge);
+        }
+        player.bridge.resetVisualState();
+        model.beginLoading();
         self.seq += 1;
         self.job = job;
         const started = &self.job.?;
         started.seq = self.seq;
         self.publishFetch(started.seq, started);
-        model.loading = true;
     }
 
     pub fn shutdown(self: *Loader) void {
@@ -226,7 +301,6 @@ pub const Loader = struct {
         path: []const u8,
     ) !void {
         const owned = try self.gpa.dupe(u8, path);
-        errdefer self.gpa.free(owned);
         if (self.job) |*job| {
             job.on_done = .discard;
             self.state.abort.store(true, .release);
@@ -245,23 +319,38 @@ pub const Loader = struct {
             false;
         const tried = try self.gpa.alloc(bool, 0);
         errdefer self.gpa.free(tried);
-        const sibling = try format.companionPath("sibling_path", self.gpa, owned_path);
-        errdefer if (sibling) |s| self.gpa.free(s);
-        const sibling_alt = try format.companionPath("sibling_alt_path", self.gpa, owned_path);
-        errdefer if (sibling_alt) |s| self.gpa.free(s);
-        const sibling2 = try format.companionPath("sibling2_path", self.gpa, owned_path);
+        const companions = try format.resolveCompanions(self.gpa, owned_path);
+        errdefer companions.deinit(self.gpa);
         self.startJob(player, model, .{
             .purpose = .detached,
             .dir = .next,
             .idx = 0,
             .seq = 0,
             .path = owned_path,
-            .sibling_path = sibling,
-            .sibling_alt_path = sibling_alt,
-            .sibling2_path = sibling2,
+            .companions = companions,
             .tried = tried,
             .track_index = if (same_file) player.track_index else 0,
         });
+    }
+
+    fn sameFileJob(self: *Loader, player: *const Player) ?*LoadJob {
+        const job = if (self.job) |*j| j else return null;
+        return switch (job.purpose) {
+            .replay => if (job.idx == player.index) job else null,
+            .detached => if (player.detached_path) |cur| (if (std.mem.eql(u8, cur, job.path)) job else null) else null,
+            .startup, .advance, .jump => null,
+        };
+    }
+
+    pub fn adoptArchiveIndex(self: *Loader, player: *const Player, index: u32) bool {
+        const job = self.sameFileJob(player) orelse return false;
+        job.track_index = index;
+        return true;
+    }
+
+    pub fn pendingArchiveIndex(self: *Loader, player: *const Player) ?u32 {
+        const job = self.sameFileJob(player) orelse return null;
+        return job.track_index;
     }
 
     pub fn skipCurrent(self: *Loader) void {
@@ -281,30 +370,22 @@ pub const Loader = struct {
         dir: Direction,
     ) !void {
         const n = player.entries.len;
-        if (n == 0 or idx >= n) {
-            if (player.src != null) try player.engine.start();
-            return;
-        }
+        if (n == 0 or idx >= n) return self.resumeIntact(player);
         const tried = try self.gpa.alloc(bool, n);
         errdefer self.gpa.free(tried);
         @memset(tried, false);
         tried[idx] = true;
         const path = try self.gpa.dupe(u8, player.entries[idx]);
         errdefer self.gpa.free(path);
-        const sibling = try format.companionPath("sibling_path", self.gpa, path);
-        errdefer if (sibling) |s| self.gpa.free(s);
-        const sibling_alt = try format.companionPath("sibling_alt_path", self.gpa, path);
-        errdefer if (sibling_alt) |s| self.gpa.free(s);
-        const sibling2 = try format.companionPath("sibling2_path", self.gpa, path);
+        const companions = try format.resolveCompanions(self.gpa, path);
+        errdefer companions.deinit(self.gpa);
         self.startJob(player, model, .{
             .purpose = purpose,
             .dir = dir,
             .idx = idx,
             .seq = 0,
             .path = path,
-            .sibling_path = sibling,
-            .sibling_alt_path = sibling_alt,
-            .sibling2_path = sibling2,
+            .companions = companions,
             .tried = tried,
             .track_index = switch (purpose) {
                 .advance, .jump => 0,
@@ -313,8 +394,9 @@ pub const Loader = struct {
         });
     }
 
-    fn stripEngineIfIntact(job: *LoadJob, player: *Player) void {
+    fn stripEngineIfIntact(self: *Loader, job: *LoadJob, player: *Player) void {
         if (!job.engine_intact) return;
+        self.resume_visuals = null;
         player.engine.source = null;
         player.deinitSource();
         player.clearDetached();
@@ -345,7 +427,7 @@ pub const Loader = struct {
 
         if (job.purpose != .detached) {
             try player.ensureOrder();
-            player.order_pos = std.mem.indexOfScalar(
+            player.order_pos = std.mem.findScalar(
                 usize,
                 player.order,
                 player.index,
@@ -353,14 +435,14 @@ pub const Loader = struct {
             player.markPlayed(player.index);
         }
 
-        try player.engine.start();
         try model.setTrack(.{
             .info = loaded.track,
             .filename = loaded.display_name,
-            .view = loaded.view,
+            .views = loaded.views,
             .source = loaded.src,
             .system = loaded.system,
         });
+        try player.engine.start();
 
         if (job.purpose == .detached) {
             model.playlist_index = player.index;
@@ -372,6 +454,7 @@ pub const Loader = struct {
         const follow = cursorFollowsPlayback(model);
         model.playlist_index = player.index;
         model.playlist_playing = true;
+        if (player.themeForIndex(player.index)) |theme_index| model.theme_index = theme_index;
         if (follow) model.playlist_list.nav.syncTo(player.index, player.entries.len);
         if (job.purpose != .startup) bridge.paused.store(false, .release);
         if (job.purpose == .startup and !self.startup_show_playlist) {
@@ -384,9 +467,7 @@ pub const Loader = struct {
         const job = if (self.job) |*j| j else return .none;
         if (self.state.done_seq.load(.acquire) != job.seq) return .none;
         self.state.req_path = null;
-        self.state.req_sibling_path = null;
-        self.state.req_sibling_alt_path = null;
-        self.state.req_sibling2_path = null;
+        self.state.req_companions = .{};
         self.state.abort.store(false, .release);
         const res = self.state.result;
         self.state.result = error.NoResult;
@@ -398,6 +479,10 @@ pub const Loader = struct {
         defer if (sibling2) |s| self.gpa.free(s);
         const sibling_is_alt = self.state.sibling_is_alt;
         self.state.sibling_is_alt = false;
+
+        const resources = self.state.resources;
+        self.state.resources = .empty;
+        defer freeResources(self.gpa, resources);
 
         switch (job.on_done) {
             .discard => {
@@ -431,14 +516,19 @@ pub const Loader = struct {
             else
                 null;
             defer if (detached_path) |path| self.gpa.free(path);
-            stripEngineIfIntact(job, player);
-            if (job.purpose == .advance or job.purpose == .jump) player.live_rate_hz = 0;
+            if (!job.model_detached) {
+                model.views = .{};
+                model.source = null;
+            }
+            const same_file = self.sameFileJob(player) != null;
+            self.stripEngineIfIntact(job, player);
+            if (!same_file) player.live_rate_hz = 0;
             const loaded = assembleTrack(
                 self.gpa,
                 player.engine,
                 job.path,
                 bytes,
-                .{ .sibling = sibling, .sibling2 = sibling2, .sibling_is_alt = sibling_is_alt },
+                .{ .sibling = sibling, .sibling2 = sibling2, .sibling_is_alt = sibling_is_alt, .resources = resources.items },
                 if (job.purpose == .detached)
                     (if (player.live_rate_hz != 0) player.live_rate_hz else player.tick_rate_hz)
                 else
@@ -453,22 +543,20 @@ pub const Loader = struct {
             };
             self.commitLoadedTrack(bridge, model, player, job, loaded, &detached_path) catch |err| {
                 // The old source is already gone and the new one may be
-                // published, so unwind to the no-track state and let the scan
-                // continue: erroring out of poll would end the session with
-                // the model still pointing at the freed old track. setTrack
-                // mutates nothing on failure, and nothing after it can fail,
-                // so the model never holds the source freed here.
+                // published to the engine and the model, so unwind to the
+                // no-track state and let the scan continue: erroring out of
+                // poll would end the session with the model still pointing at
+                // a freed track.
                 player.engine.stop();
                 player.engine.source = null;
                 player.src = null;
                 player.clearDetached();
                 loaded.src.deinit(self.gpa);
-                if (!job.model_detached) {
-                    model.clearTrack();
-                    job.model_detached = true;
-                }
+                model.clearTrack();
+                job.model_detached = true;
                 return self.advance(bridge, model, player, err);
             };
+            try player.keepInput(job.path, bytes, .{ .sibling = sibling, .sibling2 = sibling2, .sibling_is_alt = sibling_is_alt, .resources = resources.items });
             self.finish(model);
             return .none;
         } else |err| {
@@ -529,21 +617,15 @@ pub const Loader = struct {
     fn retarget(self: *Loader, player: *Player, job: *LoadJob, ni: usize) !PollResult {
         const new_path = try self.gpa.dupe(u8, player.entries[ni]);
         errdefer self.gpa.free(new_path);
-        const new_sibling = try format.companionPath("sibling_path", self.gpa, new_path);
-        errdefer if (new_sibling) |s| self.gpa.free(s);
-        const new_sibling_alt = try format.companionPath("sibling_alt_path", self.gpa, new_path);
-        errdefer if (new_sibling_alt) |s| self.gpa.free(s);
-        const new_sibling2 = try format.companionPath("sibling2_path", self.gpa, new_path);
+        const new_companions = try format.resolveCompanions(self.gpa, new_path);
+        errdefer new_companions.deinit(self.gpa);
         self.gpa.free(job.path);
         job.path = new_path;
-        if (job.sibling_path) |s| self.gpa.free(s);
-        job.sibling_path = new_sibling;
-        if (job.sibling_alt_path) |s| self.gpa.free(s);
-        job.sibling_alt_path = new_sibling_alt;
-        if (job.sibling2_path) |s| self.gpa.free(s);
-        job.sibling2_path = new_sibling2;
+        job.companions.deinit(self.gpa);
+        job.companions = new_companions;
         job.tried[ni] = true;
         job.idx = ni;
+        job.track_index = 0;
         self.seq += 1;
         job.seq = self.seq;
         self.publishFetch(job.seq, job);
@@ -557,11 +639,20 @@ pub const Loader = struct {
         self.finish(model);
         if (was_startup and player.src == null) return .startup_failed;
         if (intact) {
-            if (player.src != null) try player.engine.start();
+            if (job.purpose == .advance and !bridge.paused.load(.acquire) and !player.engine.park_after_wait) {
+                bridge.loop_count.store(0, .release);
+            }
+            try self.resumeIntact(player);
         } else {
             parkIdle(bridge, model, player);
         }
         return .none;
+    }
+
+    fn resumeIntact(self: *Loader, player: *Player) !void {
+        if (self.resume_visuals) |*saved| saved.restore(player.bridge);
+        self.resume_visuals = null;
+        if (player.src != null) try player.engine.start();
     }
 
     fn finish(self: *Loader, model: *ui.Model) void {
@@ -574,19 +665,20 @@ pub const Loader = struct {
 
     fn freeJobFields(self: *Loader, job: *LoadJob) void {
         self.gpa.free(job.path);
-        if (job.sibling_path) |s| self.gpa.free(s);
-        if (job.sibling_alt_path) |s| self.gpa.free(s);
-        if (job.sibling2_path) |s| self.gpa.free(s);
+        job.companions.deinit(self.gpa);
         self.gpa.free(job.tried);
     }
 
     pub fn deinit(self: *Loader) void {
+        self.zip_cache.deinit(self.gpa);
         self.dropQueued();
         if (self.job) |*job| {
             if (self.state.done_seq.load(.acquire) == job.seq) {
                 if (self.state.result) |bytes| self.gpa.free(bytes) else |_| {}
                 if (self.state.sibling) |s| self.gpa.free(s);
                 if (self.state.sibling2) |s| self.gpa.free(s);
+                freeResources(self.gpa, self.state.resources);
+                self.state.resources = .empty;
             }
             self.freeJobFields(job);
             self.job = null;
@@ -616,6 +708,33 @@ fn parkIdle(bridge: *Bridge, model: *ui.Model, player: *Player) void {
 }
 
 // --- tests -------------------------------------------------------------------
+
+test "named resources try alternate paths and survive through decoder loading" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const song = [_]u8{ 0x84, 0, 0 } ++ @as([32]u8, @splat(0)) ++ [_]u8{ 0, 0xfc };
+    try dir.dir.writeFile(io, .{ .sub_path = "fixture.sci", .data = &song });
+    const path = try gpa.print(".zig-cache/tmp/{s}/fixture.sci", .{dir.sub_path});
+    defer gpa.free(path);
+    var state = FetchState{ .req_path = path };
+    defer freeResources(gpa, state.resources);
+    try std.testing.expectError(error.MissingResource, Loader.fetchEntry(gpa, io, &state));
+    const bank: [48 * 28]u8 = @splat(0);
+    try dir.dir.writeFile(io, .{ .sub_path = "3.pat", .data = &bank });
+    const bytes = try Loader.fetchEntry(gpa, io, &state);
+    defer gpa.free(bytes);
+    try std.testing.expectEqual(@as(usize, 1), state.resources.items.len);
+    try std.testing.expectEqualStrings("sci.patch", state.resources.items[0].name);
+    const src = (try format.load(gpa, path, bytes, .{ .sample_rate = 44100, .chip = format.noop_chip, .resources = state.resources.items })).?;
+    defer src.deinit(gpa);
+    freeResources(gpa, state.resources);
+    state.resources = .empty;
+    try std.testing.expectEqualStrings("SCI0", src.info().format_name);
+    try std.testing.expectEqual(@as(u16, 48), src.views().instruments.?.count);
+    try std.testing.expect(src.step(format.noop_chip).done);
+}
 
 test "cursor follows playback only while it sits on the playing row" {
     var br = Bridge{};
@@ -700,6 +819,27 @@ fn requestOomBody(gpa: std.mem.Allocator, io: Io) !void {
     try std.testing.expect(loader.busy());
 }
 
+fn requestDetachedOomBody(gpa: std.mem.Allocator, io: Io) !void {
+    var h: LoaderHarness = .{};
+    try h.init(io, &.{"a.imf"});
+    defer h.deinit();
+
+    var loader = Loader{ .gpa = gpa, .io = io };
+    defer loader.deinit();
+    try loader.requestDetached(&h.player, &h.model, "http://elsewhere/AUDIOHED.WL6");
+    try std.testing.expect(loader.busy());
+}
+
+test "Loader detached request frees its path once on allocation failure" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        requestDetachedOomBody,
+        .{threaded.io()},
+    );
+}
+
 test "Loader request propagates allocation failure" {
     var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
     defer threaded.deinit();
@@ -708,6 +848,159 @@ test "Loader request propagates allocation failure" {
         requestOomBody,
         .{threaded.io()},
     );
+}
+
+test "loading clears the old visualizer before the fetch completes" {
+    var h: LoaderHarness = .{};
+    try h.init(std.testing.io, &.{ "a.imf", "b.imf" });
+    defer h.deinit();
+    h.bridge.position_frames.store(1234, .release);
+    h.bridge.loop_count.store(2, .release);
+    h.bridge.levels[0].store(255, .release);
+    h.bridge.pcm_peak.store(255, .release);
+    h.bridge.pcm_bands[0].store(255, .release);
+    h.bridge.playhead.write(.{ .row = 15, .flags = .{ .has_row = true } });
+    h.bridge.channels.write(.{ .channels = 9 });
+    h.bridge.sequence.write(.{ .channels = 16 });
+    h.bridge.write_log_i.store(10, .release);
+    h.model.sampleVisuals();
+    try std.testing.expect(h.model.spec_levels[0] > 0);
+
+    var loader = Loader{ .gpa = std.testing.allocator, .io = std.testing.io };
+    defer loader.deinit();
+    try loader.request(&h.player, &h.model, .jump, 1, .next);
+
+    try std.testing.expect(h.model.loading);
+    try std.testing.expectEqualStrings("stream", h.model.viz.name);
+    try std.testing.expectEqual(@as(f32, 0), h.model.spec_levels[0]);
+    try std.testing.expectEqual(@as(f32, 0), h.model.pcm_peak);
+    try std.testing.expectEqual(@as(u8, 0), h.bridge.levels[0].load(.acquire));
+    try std.testing.expectEqual(@as(u8, 0), h.bridge.pcm_bands[0].load(.acquire));
+    try std.testing.expectEqual(@as(u16, 0), h.bridge.playhead.read().row);
+    try std.testing.expectEqual(@as(u16, 0), h.bridge.channels.read().channels);
+    try std.testing.expectEqual(@as(u16, 0), h.bridge.sequence.read().channels);
+    try std.testing.expectEqual(@as(u32, 0), h.bridge.write_log_i.load(.acquire));
+    try std.testing.expectEqual(@as(u64, 1234), h.bridge.position_frames.load(.acquire));
+    try std.testing.expectEqual(@as(u32, 2), h.bridge.loop_count.load(.acquire));
+}
+
+test "a failed skip from a paused track puts its snapshots and register history back" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const PausedSrc = struct {
+        pub fn step(_: *@This(), _: format.Chip) format.StepResult {
+            return .{ .frames = 1 };
+        }
+
+        pub fn info(_: *@This()) format.TrackInfo {
+            return .{ .format_name = "HSC", .visualizer = "tracker" };
+        }
+
+        pub fn deinit(_: *@This(), _: std.mem.Allocator) void {}
+    };
+
+    const entries = [_][]const u8{ "http://x/a.hsc", "http://x/missing.hsc" };
+    var h: LoaderHarness = .{};
+    try h.init(io, &entries);
+    defer h.deinit();
+    var paused_src = PausedSrc{};
+    h.player.src = format.MusicSource.init(&paused_src, "tracker");
+    h.engine.source = h.player.src;
+
+    var loader = Loader{ .gpa = std.testing.allocator, .io = io };
+    defer loader.deinit();
+
+    var chip = view.ChipSnapshot{};
+    chip.voices[2].keyed = true;
+    h.bridge.paused.store(true, .release);
+    h.bridge.playhead.write(.{ .order = 5, .row = 30, .last_instrument = 7, .flags = .{ .has_order = true, .has_row = true } });
+    h.bridge.chip.write(chip);
+    h.bridge.write_log[3].store(0x31b0, .release);
+    h.bridge.write_log_i.store(4, .release);
+
+    try loader.request(&h.player, &h.model, .advance, 1, .next);
+    try std.testing.expectEqual(@as(u16, 0), h.bridge.playhead.read().row);
+    h.engine.started = true;
+    completeFetch(&loader, error.HttpRequestFailed);
+    _ = try loader.poll(&h.bridge, &h.model, &h.player);
+
+    try std.testing.expect(!loader.busy());
+    try std.testing.expect(h.bridge.paused.load(.acquire));
+    const playhead = h.bridge.playhead.read();
+    try std.testing.expectEqual(@as(u16, 5), playhead.order);
+    try std.testing.expectEqual(@as(u16, 30), playhead.row);
+    try std.testing.expectEqual(@as(u16, 7), playhead.last_instrument);
+    try std.testing.expect(h.bridge.chip.read().voices[2].keyed);
+    try std.testing.expectEqual(@as(u32, 4), h.bridge.write_log_i.load(.acquire));
+    try std.testing.expectEqual(@as(u32, 0x31b0), h.bridge.write_log[3].load(.acquire));
+
+    h.engine.started = false;
+    h.player.clearUnplayable(1);
+    h.bridge.playhead.write(.{ .order = 6, .row = 12, .flags = .{ .has_order = true, .has_row = true } });
+    try loader.request(&h.player, &h.model, .advance, 1, .next);
+    try loader.request(&h.player, &h.model, .jump, 1, .next);
+    completeFetch(&loader, error.HttpRequestFailed);
+    _ = try loader.poll(&h.bridge, &h.model, &h.player);
+    try std.testing.expect(loader.busy());
+    try std.testing.expectEqual(@as(u16, 0), h.bridge.playhead.read().row);
+    h.engine.started = true;
+    completeFetch(&loader, error.HttpRequestFailed);
+    _ = try loader.poll(&h.bridge, &h.model, &h.player);
+
+    try std.testing.expect(!loader.busy());
+    try std.testing.expectEqual(@as(u16, 6), h.bridge.playhead.read().order);
+    try std.testing.expectEqual(@as(u16, 12), h.bridge.playhead.read().row);
+    try std.testing.expect(h.bridge.chip.read().voices[2].keyed);
+}
+
+test "a failed advance from a playing track clears its song end but keeps a parked one" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const Src = struct {
+        pub fn step(_: *@This(), _: format.Chip) format.StepResult {
+            return .{ .frames = 1 };
+        }
+
+        pub fn info(_: *@This()) format.TrackInfo {
+            return .{ .format_name = "IMF" };
+        }
+
+        pub fn deinit(_: *@This(), _: std.mem.Allocator) void {}
+    };
+
+    const entries = [_][]const u8{ "http://x/a.imf", "http://x/missing.imf" };
+    var h: LoaderHarness = .{};
+    try h.init(io, &entries);
+    defer h.deinit();
+    var src = Src{};
+    h.player.src = format.MusicSource.init(&src, "stream");
+    h.engine.source = h.player.src;
+
+    var loader = Loader{ .gpa = std.testing.allocator, .io = io };
+    defer loader.deinit();
+
+    h.bridge.loop_count.store(1, .release);
+    try loader.request(&h.player, &h.model, .advance, 1, .next);
+    h.engine.started = true;
+    completeFetch(&loader, error.HttpRequestFailed);
+    _ = try loader.poll(&h.bridge, &h.model, &h.player);
+    try std.testing.expect(!loader.busy());
+    try std.testing.expectEqual(@as(u32, 0), h.bridge.loop_count.load(.acquire));
+
+    h.engine.started = false;
+    h.player.clearUnplayable(1);
+    h.bridge.loop_count.store(1, .release);
+    h.bridge.paused.store(true, .release);
+    try loader.request(&h.player, &h.model, .advance, 1, .next);
+    h.engine.started = true;
+    completeFetch(&loader, error.HttpRequestFailed);
+    _ = try loader.poll(&h.bridge, &h.model, &h.player);
+    try std.testing.expect(!loader.busy());
+    try std.testing.expectEqual(@as(u32, 1), h.bridge.loop_count.load(.acquire));
 }
 
 test "Loader scans every entry then reports startup failure when all fetches fail" {
@@ -720,7 +1013,7 @@ test "Loader scans every entry then reports startup failure when all fetches fai
     try h.init(io, &entries);
     defer h.deinit();
 
-    var startup_errors = [_]?anyerror{null} ** entries.len;
+    var startup_errors: [entries.len]?anyerror = @splat(null);
     var loader = Loader{ .gpa = std.testing.allocator, .io = io, .startup_errors = &startup_errors };
     defer loader.deinit();
 
@@ -795,6 +1088,46 @@ test "Loader jobs target subtrack zero only when aimed at a different file" {
     try std.testing.expectEqual(@as(u32, 9), h.player.track_index);
 }
 
+test "adoptArchiveIndex updates a same-file replay and ignores other jobs" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const entries = [_][]const u8{ "a.imf", "b.imf" };
+    var h: LoaderHarness = .{};
+    try h.init(io, &entries);
+    defer h.deinit();
+
+    var loader = Loader{ .gpa = std.testing.allocator, .io = io };
+    defer loader.deinit();
+
+    try std.testing.expect(!loader.adoptArchiveIndex(&h.player, 3));
+
+    h.player.track_index = 1;
+    try loader.request(&h.player, &h.model, .replay, 0, .next);
+    try std.testing.expect(loader.adoptArchiveIndex(&h.player, 4));
+    try std.testing.expectEqual(@as(u32, 4), loader.job.?.track_index);
+    try std.testing.expectEqual(@as(?u32, 4), loader.pendingArchiveIndex(&h.player));
+    loader.finish(&h.model);
+
+    try loader.request(&h.player, &h.model, .advance, 1, .next);
+    try std.testing.expectEqual(@as(?u32, null), loader.pendingArchiveIndex(&h.player));
+    try std.testing.expect(!loader.adoptArchiveIndex(&h.player, 2));
+    try std.testing.expectEqual(@as(u32, 0), loader.job.?.track_index);
+    loader.finish(&h.model);
+
+    h.player.detached_path = try std.testing.allocator.dupe(u8, "solo.imf");
+    h.player.track_index = 6;
+    try loader.requestDetached(&h.player, &h.model, "solo.imf");
+    try std.testing.expect(loader.adoptArchiveIndex(&h.player, 8));
+    try std.testing.expectEqual(@as(u32, 8), loader.job.?.track_index);
+    loader.finish(&h.model);
+
+    try loader.requestDetached(&h.player, &h.model, "other.imf");
+    try std.testing.expect(!loader.adoptArchiveIndex(&h.player, 8));
+    try std.testing.expectEqual(@as(u32, 0), loader.job.?.track_index);
+}
+
 test "Loader keeps the playing subtrack index when every substitute fails" {
     var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
     defer threaded.deinit();
@@ -819,6 +1152,111 @@ test "Loader keeps the playing subtrack index when every substitute fails" {
     try std.testing.expectEqual(@as(u32, 5), h.player.track_index);
 }
 
+test "Loader keeps the R rate when every substitute fails and the old track resumes" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const entries = [_][]const u8{ "http://x/a.hsc", "http://x/b.hsc", "http://x/c.hsc" };
+    var h: LoaderHarness = .{};
+    try h.init(io, &entries);
+    defer h.deinit();
+
+    var loader = Loader{ .gpa = std.testing.allocator, .io = io };
+    defer loader.deinit();
+
+    h.player.live_rate_hz = 700;
+    try loader.request(&h.player, &h.model, .advance, 1, .next);
+    var guard: usize = 0;
+    while (loader.busy() and guard < 8) : (guard += 1) {
+        completeFetch(&loader, error.HttpRequestFailed);
+        _ = try loader.poll(&h.bridge, &h.model, &h.player);
+    }
+    try std.testing.expect(!loader.busy());
+    try std.testing.expect(h.player.unplayable[1] and h.player.unplayable[2]);
+    try std.testing.expectEqual(@as(u32, 700), h.player.live_rate_hz);
+
+    h.player.clearUnplayable(1);
+    try loader.request(&h.player, &h.model, .replay, 0, .next);
+    completeFetch(&loader, error.HttpRequestFailed);
+    _ = try loader.poll(&h.bridge, &h.model, &h.player);
+    try std.testing.expectEqual(@as(usize, 1), loader.job.?.idx);
+    try std.testing.expectEqual(@as(u32, 700), h.player.live_rate_hz);
+    completeFetch(&loader, try std.testing.allocator.dupe(u8, "DATA"));
+    _ = try loader.poll(&h.bridge, &h.model, &h.player);
+    try std.testing.expect(!loader.busy());
+    try std.testing.expectEqual(@as(u32, 0), h.player.live_rate_hz);
+}
+
+test "a detached load of another file drops the R rate once its fetch succeeds" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const entries = [_][]const u8{"http://x/a.imf"};
+    var h: LoaderHarness = .{};
+    try h.init(io, &entries);
+    defer h.deinit();
+
+    var loader = Loader{ .gpa = std.testing.allocator, .io = io };
+    defer loader.deinit();
+
+    h.player.detached_path = try std.testing.allocator.dupe(u8, "http://elsewhere/one.hsc");
+    h.player.live_rate_hz = 700;
+    try loader.requestDetached(&h.player, &h.model, "http://elsewhere/two.hsc");
+    completeFetch(&loader, error.HttpRequestFailed);
+    _ = try loader.poll(&h.bridge, &h.model, &h.player);
+    try std.testing.expect(!loader.busy());
+    try std.testing.expectEqual(@as(u32, 700), h.player.live_rate_hz);
+
+    try loader.requestDetached(&h.player, &h.model, "http://elsewhere/one.hsc");
+    completeFetch(&loader, try std.testing.allocator.dupe(u8, "DATA"));
+    _ = try loader.poll(&h.bridge, &h.model, &h.player);
+    try std.testing.expect(!loader.busy());
+    try std.testing.expectEqual(@as(u32, 700), h.player.live_rate_hz);
+
+    h.player.detached_path = try std.testing.allocator.dupe(u8, "http://elsewhere/one.hsc");
+    try loader.requestDetached(&h.player, &h.model, "http://elsewhere/two.hsc");
+    completeFetch(&loader, try std.testing.allocator.dupe(u8, "DATA"));
+    _ = try loader.poll(&h.bridge, &h.model, &h.player);
+    try std.testing.expect(!loader.busy());
+    try std.testing.expectEqual(@as(u32, 0), h.player.live_rate_hz);
+}
+
+test "a playlist entry's theme tag applies when the entry loads" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const entries = [_][]const u8{ "http://x/a.imf", "http://x/b.imf" };
+    var h: LoaderHarness = .{};
+    try h.init(io, &entries);
+    defer h.deinit();
+    h.player.themes = &.{ 5, null };
+    h.model.theme_index = 0;
+
+    var loader = Loader{ .gpa = std.testing.allocator, .io = io };
+    defer loader.deinit();
+    const imf = [_]u8{ 0x20, 0x01, 0x10, 0x00, 0x40, 0x10, 0x10, 0x00 };
+
+    try loader.request(&h.player, &h.model, .jump, 0, .next);
+    h.engine.started = true;
+    completeFetch(&loader, try std.testing.allocator.dupe(u8, &imf));
+    _ = try loader.poll(&h.bridge, &h.model, &h.player);
+    try std.testing.expect(!loader.busy());
+    try std.testing.expectEqual(@as(usize, 0), h.player.index);
+    try std.testing.expectEqual(@as(usize, 5), h.model.theme_index);
+
+    h.model.theme_index = 2;
+    h.engine.started = false;
+    try loader.request(&h.player, &h.model, .jump, 1, .next);
+    h.engine.started = true;
+    completeFetch(&loader, try std.testing.allocator.dupe(u8, &imf));
+    _ = try loader.poll(&h.bridge, &h.model, &h.player);
+    try std.testing.expectEqual(@as(usize, 1), h.player.index);
+    try std.testing.expectEqual(@as(usize, 2), h.model.theme_index);
+}
+
 test "Loader publishes the AudioT companion path with the request" {
     var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
     defer threaded.deinit();
@@ -832,8 +1270,8 @@ test "Loader publishes the AudioT companion path with the request" {
     var loader = Loader{ .gpa = std.testing.allocator, .io = io };
     defer loader.deinit();
     try loader.request(&h.player, &h.model, .jump, 0, .next);
-    try std.testing.expectEqualStrings("game/AUDIOT.WL6", loader.job.?.sibling_path.?);
-    try std.testing.expectEqualStrings("game/AUDIOT.WL6", loader.state.req_sibling_path.?);
+    try std.testing.expectEqualStrings("game/AUDIOT.WL6", loader.job.?.companions.sibling.?);
+    try std.testing.expectEqualStrings("game/AUDIOT.WL6", loader.state.req_companions.sibling.?);
 
     loader.state.sibling = try std.testing.allocator.dupe(u8, "HED");
     completeFetch(&loader, try std.testing.allocator.dupe(u8, "DATA"));
@@ -855,10 +1293,10 @@ test "Loader publishes both companions for a compressed AudioT archive" {
     var loader = Loader{ .gpa = std.testing.allocator, .io = io };
     defer loader.deinit();
     try loader.request(&h.player, &h.model, .jump, 0, .next);
-    try std.testing.expectEqualStrings("game/AUDIOHED.CK4", loader.job.?.sibling_path.?);
-    try std.testing.expect(loader.job.?.sibling_alt_path == null);
-    try std.testing.expectEqualStrings("game/AUDIODCT.CK4", loader.job.?.sibling2_path.?);
-    try std.testing.expectEqualStrings("game/AUDIODCT.CK4", loader.state.req_sibling2_path.?);
+    try std.testing.expectEqualStrings("game/AUDIOHED.CK4", loader.job.?.companions.sibling.?);
+    try std.testing.expect(loader.job.?.companions.sibling_alt == null);
+    try std.testing.expectEqualStrings("game/AUDIODCT.CK4", loader.job.?.companions.sibling2.?);
+    try std.testing.expectEqualStrings("game/AUDIODCT.CK4", loader.state.req_companions.sibling2.?);
 
     loader.state.sibling = try std.testing.allocator.dupe(u8, "HED");
     loader.state.sibling2 = try std.testing.allocator.dupe(u8, "DCT");
@@ -881,10 +1319,10 @@ test "Loader publishes the alternate companion for an AUDIOHED entry" {
     var loader = Loader{ .gpa = std.testing.allocator, .io = io };
     defer loader.deinit();
     try loader.request(&h.player, &h.model, .jump, 0, .next);
-    try std.testing.expectEqualStrings("game/AUDIOT.CK4", loader.job.?.sibling_path.?);
-    try std.testing.expectEqualStrings("game/AUDIO.CK4", loader.job.?.sibling_alt_path.?);
-    try std.testing.expectEqualStrings("game/AUDIODCT.CK4", loader.job.?.sibling2_path.?);
-    try std.testing.expectEqualStrings("game/AUDIO.CK4", loader.state.req_sibling_alt_path.?);
+    try std.testing.expectEqualStrings("game/AUDIOT.CK4", loader.job.?.companions.sibling.?);
+    try std.testing.expectEqualStrings("game/AUDIO.CK4", loader.job.?.companions.sibling_alt.?);
+    try std.testing.expectEqualStrings("game/AUDIODCT.CK4", loader.job.?.companions.sibling2.?);
+    try std.testing.expectEqualStrings("game/AUDIO.CK4", loader.state.req_companions.sibling_alt.?);
 
     loader.state.sibling = try std.testing.allocator.dupe(u8, "AUD");
     loader.state.sibling_is_alt = true;

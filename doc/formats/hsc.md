@@ -1,28 +1,38 @@
 # HSC tracker format
 
-**Extension:** `.hsc` (case-insensitive)
+**Extensions:** `.hsc`, `.hsp` (case-insensitive)
 **Chip:** OPL2
 **Tick rate:** 91/5 Hz
 **Module:** `src/formats/hsc.zig`
 
 HSC is a tracker format by Hannes Seifert. A file contains 128 instruments, a
 51-byte order list, and up to 50 patterns. It has no magic value. A parser must
-use the extension and structural limits.
+use the extension and structural limits. `.hsp` is the same bytes packed with
+RLE by Number Six / Aegis (`HSCOMP` / `hsc2hsp`). A `.hsp` path reports format
+name `HSP`.
 
 External reference:
 HSC-Tracker 1.5 `HSCPLAY.EXE` (HSCOBJ 1.4). File-layout notes also appear in
 [libxmp's hsc.txt](https://github.com/cmatsuoka/libxmp/blob/master/docs/formats/hsc.txt).
-That text describes AdPlug-style effects and is not the playlist source of
-truth.
+That text describes AdPlug-style effects. Playback here follows HSCOBJ 1.4.
+Packed files use Aegis HSC Interface 1.1 (`agshsc.doc`) as their reference.
 
 ## Identification
 
-sehnsucht accepts a file when all of these conditions hold:
+sehnsucht dispatches this decoder for `.hsc` and `.hsp` paths.
 
-1. The path ends in `.hsc`, ignoring case.
-2. The file is at least 2739 bytes.
-3. The file is no larger than 59188 bytes.
-4. At least one complete pattern follows the 1587-byte header.
+For `.hsc`:
+
+1. The file is at least 2739 bytes.
+2. The file is no larger than 59188 bytes.
+3. At least one complete pattern follows the 1587-byte header.
+
+For `.hsp`:
+
+1. The file is at least two bytes.
+2. The little-endian word at offset 0 is the uncompressed size. It is in
+   `1..=59188`.
+3. The RLE stream that follows unpacks to a valid HSC file.
 
 The pattern count is:
 
@@ -30,11 +40,17 @@ The pattern count is:
 min(floor((file_size - 1587) / 1152), 50)
 ```
 
-Bytes after the last complete pattern are ignored.
+Bytes after the last complete pattern do not count toward the pattern view.
+Playback still reads any whole cells there when the order list reaches that
+pattern. A size word of 0, or a
+size above 59188, declines a `.hsp` file. A recognized size word whose
+unpacked bytes would not load as HSC returns `error.InvalidHsp`.
 
 ## File layout
 
-All values are bytes. There are no multi-byte integers in the container.
+Unpacked HSC uses only bytes. There are no multi-byte integers in that
+container. Packed `.hsp` prefixes those bytes with a little-endian size word
+and RLE runs, described below.
 
 | Offset | Size | Content |
 |-------:|-----:|---------|
@@ -52,6 +68,21 @@ effect      = file[cell_offset + 1]
 ```
 
 Valid row numbers are 0 through 63. Valid channel numbers are 0 through 8.
+
+### Packed (`.hsp`)
+
+A packed file is little-endian.
+
+| Offset | Size | Field |
+|-------:|-----:|-------|
+| 0 | 2 | Uncompressed size (`orgsize`) |
+| 2 | rest | RLE runs |
+
+Each run is two bytes. Byte 0 is the count (`0..=255`). Byte 1 is the value.
+A count of 0 writes nothing. Runs continue until `orgsize` bytes are written
+or the stream ends. A trailing odd byte is ignored. If a run would pass
+`orgsize`, only the remaining bytes are written. If the stream ends early,
+the actual unpacked length is kept.
 
 ### Instruments
 
@@ -114,11 +145,14 @@ The order list begins at offset 1536 and contains 51 bytes.
 |------:|---------|
 | `0x00` to `0x31` | Pattern 0 through 49 |
 | `0x32` to `0x7F` | Invalid pattern reference |
-| `0x80` to `0xB1` | Jump to order position `value & 0x7F` |
+| `0x80` to `0xB0` | Jump to order position `value & 0x7F` |
+| `0xB1` | Jump to order position 0 |
 | `0xB2` to `0xFF` | End of song |
 
-The tracker view copies the 51 file bytes and turns values from `0xB2` through
-`0xFE` into `0xFF`. Playback does not use that copy. It reads
+The decoder copies the 51 file bytes and turns values from `0xB2` through
+`0xFE` into `0xFF`. The tracker order pane uses that copy but only through the
+first `0xFF`, so the terminator and any bytes after it are not extra rows.
+Playback does not use that copy. It reads
 `file[1536 + order_pos]` the same way HSCOBJ indexes the order table. A
 pattern number at or past the loaded pattern count still plays: cells past
 the end of the file are empty. After a pattern finishes (row 64, or effect
@@ -187,6 +221,9 @@ instrument's KSL bits. For `n << 2` in `0x00` through `0x3C` that is the same
 value HSCOBJ's volume flush would store.
 
 ## Decoding
+
+A `.hsp` file is unpacked first. The rest of this section is the HSC
+bytes, packed or not.
 
 ### Pitch and key handling
 
@@ -269,39 +306,41 @@ For each processed row:
 6. Advance the order position when the row wraps from 63 to 0, then resolve
    a jump or end marker in that slot.
 
-Song boundaries report one completion edge, then playback continues from the
-resolved order position.
+Song boundaries report one completion edge after the last played row, then
+playback continues from the resolved order position. The sehnsucht shell
+treats that edge as the end of the current file. A single file still loops
+until quit, and a multi-entry list advances or parks on the last track when
+list loop is off. Parking waits for that last row's audio and tracker
+cursor before pause.
 
 ## Metadata
 
-HSC stores no title or other text, and sehnsucht synthesizes none, so the
-decoder reports no title at all and the shell falls back to the decoded file
-name without its extension. The decoder exposes the order position, row,
-pattern, speed, last triggered instrument, instrument data, and decoded cells
-to the tracker visualizer. Instrument-set cells show `effect & 0x7F`. Ordinary
-notes use `octave = n / 12` without wrapping to 0..7, matching `noteWord`.
+HSC stores no title or other text. The shell uses the decoded filename without
+its extension. The decoder exposes order position, row, pattern, speed,
+last triggered instrument, instrument data, decoded cells, and live channel state
+(instrument, key-on, last note, programmed modulator and carrier levels) to
+the tracker visualizer. The pattern strip prints `Pattern xx/nn` in decimal, the
+fixed tick as `Rate 18.2 Hz`, and nibble effects keep the stored byte. Pattern
+break is marked `01!`. Speed, including fallthrough bytes such as `03` and
+`53`, is marked with a trailing `s` (`F3s`, `53s`). Slide and volume bytes are
+unmarked hex. Channel heads show the sounded OPL pitch when that voice is
+keyed, otherwise `-n-`. LIVE shows `{ch} Ixx {carrier TL}` when the last `0xB0`
+write left key-on, and `{ch} Ixx --` when it did not. An instrument-set with
+slide 0 writes `0xB0 = 0`. LIVE follows that write even if the stored frequency
+word still has key-on. Unused
+instrument slots (not 0 through 8 and never referenced by an `Ixx` cell) show
+as `UNUSED`. Instrument slide is `SL` on the instrument title. Operator
+columns are labeled MOD then CAR. Instrument-set cells show `effect & 0x7F`.
+Ordinary notes use `octave = n / 12` without wrapping to 0..7, matching
+`noteWord`.
 
 ## Errors
 
 Wrong extensions and files outside the accepted size range are not claimed as
-HSC. Invalid pattern references and order end values are repaired as described
-under [Order list](#order-list). Incomplete trailing pattern bytes are ignored.
-
-## Compatibility notes
-
-HSC is OPL2 only. It does not contain OPL3 four-operator voices, PCM data, or a
-register log.
-
-HSC-Tracker 1.5 `HSCPLAY.EXE` (HSCOBJ 1.4) is the source of truth for the
-HSC playlist. The object was disassembled from `HSCOBJ.BIN`. A Python
-tracer of that binary was run against all 234 playlist modules (and the
-HSC-Tracker example set). After the decoder matched that tracer, Fmtrk2 was
-also checked as a DOSBox DRO from HSCPLAY.
-
-AdPlug's `hsc.cpp` and libxmp's `hsc.txt` document `0xFn` as speed and omit
-the original fallthrough that makes `0x3n`, `0x5n`, `0x6n`, `0xDn`, and
-the other unmatched bytes set speed. They also add slides to a 16-bit
-F-number, run the effect before the note, xor KSL on FM modulators, treat
-`0x6n` as feedback, treat `0x5n` as percussion, keep KSL on volume
-commands, and (in AdPlug) turn rhythm-mode melody on channels 6 through 8
-into drum triggers.
+HSC. A `.hsp` size word outside `1..=59188` is not claimed. A recognized
+packed size whose unpacked bytes HSC would decline returns `error.InvalidHsp`.
+Order end values are folded to `0xFF` only in the order pane's copy, as
+described under [Order list](#order-list). Invalid pattern references are not
+repaired. They play, and cells past the end of the file are empty. Incomplete
+trailing pattern bytes are left out of the pattern count but still play when
+the order list reaches them.

@@ -6,8 +6,15 @@
 const std = @import("std");
 
 const fmt = @import("../format.zig");
+const view = @import("../view.zig");
 
-pub const visualizer_name = "stream";
+pub const format_name = "XSM";
+pub const extensions = &.{".xsm"};
+pub const visualizer_name = "tracker";
+pub const view_caps = view.ViewCaps{ .pattern = true, .instruments = true };
+
+const xsm_columns = [_]view.ColumnId{.note};
+const xsm_cell_template = view.CellTemplate{ .width = 3, .note_w = 3 };
 
 const magic = "ofTAZ!";
 const header_bytes = 8;
@@ -75,6 +82,7 @@ const XsmSource = struct {
     last: u16 = 0,
     sample_rate: u32,
     frac: u32 = 0,
+    patches: [channels][patch_bytes]u8 = @splat(@splat(0)),
 
     fn rewind(self: *XsmSource) void {
         self.row = 0;
@@ -114,7 +122,6 @@ const XsmSource = struct {
             .opl3 = false,
             .system = "OPL2",
             .loop = true,
-            .visualizer = visualizer_name,
         };
     }
 
@@ -122,11 +129,73 @@ const XsmSource = struct {
         return @as(u64, self.songlen) * self.sample_rate / tick_hz;
     }
 
+    pub fn playhead(self: *XsmSource) view.Playhead {
+        const sounded: u16 = if (self.row == 0) 0 else self.last;
+        return .{
+            .row = sounded,
+            .pattern = 0,
+            .flags = .{ .has_row = true, .has_pattern = true },
+        };
+    }
+
+    pub fn patternView(self: *XsmSource) view.PatternView {
+        return .{
+            .ctx = self,
+            .grid = .shared_pattern,
+            .occupancy = .independent,
+            .columns = &xsm_columns,
+            .effect_style = .raw_hex,
+            .cell_template = xsm_cell_template,
+            .channels = channels,
+            .rows_per_pattern = self.songlen,
+            .num_patterns = 1,
+            .cell = viewCell,
+        };
+    }
+
+    pub fn instrumentBank(self: *XsmSource) view.InstrumentBank {
+        return .{
+            .ctx = self,
+            .count = channels,
+            .get = xsmInstrument,
+        };
+    }
+
     pub fn deinit(self: *XsmSource, gpa: std.mem.Allocator) void {
         gpa.free(self.music);
         gpa.destroy(self);
     }
 };
+
+fn viewCell(ptr: *anyopaque, pattern: u16, row: u16, chan: u16) view.Cell {
+    const self: *XsmSource = @ptrCast(@alignCast(ptr));
+    if (pattern != 0 or row >= self.songlen or chan >= channels) return .{};
+    const note = self.cell(row, @intCast(chan));
+    if (note == 0) return .{ .note = .rest };
+    return .{ .note = .{ .pitch = .{ .semitone = note % 12, .octave = note / 12 } } };
+}
+
+const xsm_inst_names = [_][]const u8{ "CH1", "CH2", "CH3", "CH4", "CH5", "CH6", "CH7", "CH8", "CH9" };
+
+fn xsmInstrument(ptr: *anyopaque, index: u16) view.InstrumentInfo {
+    const self: *XsmSource = @ptrCast(@alignCast(ptr));
+    if (index >= channels) return .{};
+    const p = self.patches[index];
+    return .{
+        .name = xsm_inst_names[index],
+        .patch = .{ .opl_2op = .{
+            .ops = .{
+                fmt.operatorParams(p[0], p[2], p[4], p[6], p[8]),
+                fmt.operatorParams(p[1], p[3], p[5], p[7], p[9]),
+                .{},
+                .{},
+            },
+            .op_count = 2,
+            .feedback = @truncate((p[10] >> 1) & 7),
+            .additive = p[10] & 1 != 0,
+        } },
+    };
+}
 
 fn parse(data: []const u8) error{InvalidXsm}!?u16 {
     if (data.len < magic.len or !std.mem.eql(u8, data[0..magic.len], magic)) return null;
@@ -149,7 +218,7 @@ fn unpackMusic(dest: []u8, src: []const u8, songlen: u16) void {
     }
 }
 
-fn load(
+pub fn load(
     gpa: std.mem.Allocator,
     data: []const u8,
     ctx: fmt.LoadContext,
@@ -169,22 +238,21 @@ fn load(
         .songlen = songlen,
         .sample_rate = ctx.sample_rate,
     };
+    for (0..channels) |i| {
+        const ch: u8 = @intCast(i);
+        @memcpy(&src.patches[i], inst[ch * inst_stride ..][0..patch_bytes]);
+    }
 
     ctx.chip.writeReg(Reg.waveform_select, 0x20);
     for (0..channels) |i| {
         const ch: u8 = @intCast(i);
-        applyPatch(inst[ch * inst_stride ..][0..patch_bytes], ctx.chip, ch);
+        applyPatch(&src.patches[i], ctx.chip, ch);
     }
     ctx.chip.flush();
-    return fmt.MusicSource.init(src);
+    return fmt.MusicSource.init(src, visualizer_name);
 }
 
-pub const format = fmt.Format{
-    .name = "XSM",
-    .extensions = &.{".xsm"},
-    .visualizer = visualizer_name,
-    .load = load,
-};
+pub const format = fmt.Format.init(@This());
 
 // --- tests -------------------------------------------------------------------
 
@@ -221,7 +289,10 @@ test "xsm loads and steps a one-row file" {
     defer src.deinit(gpa);
 
     try std.testing.expectEqualStrings("XSM", src.info().format_name);
+    try std.testing.expectEqualStrings("tracker", src.info().visualizer);
     try std.testing.expectEqual(@as(u64, 44100 / tick_hz), src.durationFrames().?);
+    try std.testing.expect(src.views().pattern != null);
+    try std.testing.expect(src.views().order == null);
     try std.testing.expect(src.step(fmt.noop_chip).frames > 0);
     try std.testing.expect(src.step(fmt.noop_chip).done);
 }

@@ -9,21 +9,22 @@ const Io = std.Io;
 const AudioEngine = @import("audioengine.zig").AudioEngine;
 const Bridge = @import("bridge.zig").Bridge;
 const format = @import("format.zig");
+const view = @import("view.zig");
+const visualizer = @import("visualizer.zig");
 
 pub const Loaded = struct {
     src: format.MusicSource,
     track: format.TrackInfo,
-    view: ?format.TrackerView,
+    views: view.SourceViews,
     display_name: []const u8,
     system: []const u8,
 };
 
 fn chipLabel(track: format.TrackInfo) []const u8 {
     if (track.system) |s| {
-        if (std.mem.eql(u8, s, "Dual OPL2") or
-            std.mem.eql(u8, s, "OPL3") or
-            std.mem.eql(u8, s, "OPL2"))
-            return s;
+        for ([_][]const u8{ "Dual OPL2", "OPL3", "OPL2" }) |label| {
+            if (std.mem.eql(u8, s, label)) return label;
+        }
     }
     return if (track.opl3) "OPL3" else "OPL2";
 }
@@ -38,20 +39,77 @@ pub fn assembleTrack(
     track_index: u32,
 ) !Loaded {
     const src = try engine.load(gpa, path, raw, companions, tick_rate_hz, track_index);
+    errdefer src.deinit(gpa);
     const track = src.info();
-    const view = src.trackerView();
-    if (std.mem.eql(u8, track.visualizer, "tracker") and view == null) {
-        src.deinit(gpa);
-        return error.MissingTrackerView;
+    const viz = visualizer.find(track.visualizer) orelse return error.UnknownVisualizer;
+    const views = src.views();
+    if (!view.ViewCaps.subsetOf(viz.requires, views.caps())) {
+        return error.MissingVisualizerData;
     }
     return .{
         .src = src,
         .track = track,
-        .view = view,
+        .views = views,
         .display_name = track.title orelse format.basenameOf(path),
         .system = chipLabel(track),
     };
 }
+
+pub const TrackInput = struct {
+    path: []u8,
+    bytes: []u8,
+    sibling: ?[]u8 = null,
+    sibling2: ?[]u8 = null,
+    sibling_is_alt: bool = false,
+    resources: []format.Resource = &.{},
+
+    pub fn init(gpa: std.mem.Allocator, path: []const u8, bytes: []const u8, from: format.Companions) !TrackInput {
+        var input: TrackInput = .{ .path = try gpa.dupe(u8, path), .bytes = &.{} };
+        errdefer input.deinit(gpa);
+        input.bytes = try gpa.dupe(u8, bytes);
+        if (from.sibling) |s| input.sibling = try gpa.dupe(u8, s);
+        if (from.sibling2) |s| input.sibling2 = try gpa.dupe(u8, s);
+        input.sibling_is_alt = from.sibling_is_alt;
+        const resources = try gpa.alloc(format.Resource, from.resources.len);
+        var copied: usize = 0;
+        errdefer {
+            for (resources[0..copied]) |r| {
+                gpa.free(r.name);
+                gpa.free(r.data);
+            }
+            gpa.free(resources);
+        }
+        for (from.resources, resources) |src, *dst| {
+            const name = try gpa.dupe(u8, src.name);
+            errdefer gpa.free(name);
+            dst.* = .{ .name = name, .data = try gpa.dupe(u8, src.data) };
+            copied += 1;
+        }
+        input.resources = resources;
+        return input;
+    }
+
+    pub fn deinit(self: TrackInput, gpa: std.mem.Allocator) void {
+        gpa.free(self.path);
+        gpa.free(self.bytes);
+        if (self.sibling) |s| gpa.free(s);
+        if (self.sibling2) |s| gpa.free(s);
+        for (self.resources) |r| {
+            gpa.free(r.name);
+            gpa.free(r.data);
+        }
+        gpa.free(self.resources);
+    }
+
+    fn companions(self: *const TrackInput) format.Companions {
+        return .{
+            .sibling = self.sibling,
+            .sibling2 = self.sibling2,
+            .sibling_is_alt = self.sibling_is_alt,
+            .resources = self.resources,
+        };
+    }
+};
 
 pub const Direction = enum(i2) {
     next = 1,
@@ -63,7 +121,7 @@ fn buildOrder(order: []usize, shuffle: bool, current: usize, rng: std.Random) us
     if (!shuffle) return if (current < order.len) current else 0;
     if (order.len == 0) return 0;
     rng.shuffle(usize, order);
-    const cur_pos = std.mem.indexOfScalar(usize, order, current) orelse 0;
+    const cur_pos = std.mem.findScalar(usize, order, current) orelse 0;
     std.mem.swap(usize, &order[0], &order[cur_pos]);
     return 0;
 }
@@ -88,6 +146,7 @@ const OwnedPlaylist = struct {
     entries: []const []const u8,
     titles: []const ?[]const u8,
     rates: []const u32,
+    themes: []const ?u8,
     name: []const u8,
     order: []usize,
     played: []bool,
@@ -98,6 +157,7 @@ const OwnedPlaylist = struct {
         paths: []const []const u8,
         titles: []const ?[]const u8,
         rates: []const u32,
+        themes: []const ?u8,
         list_name: []const u8,
     ) !OwnedPlaylist {
         const new_entries = try gpa.alloc([]const u8, paths.len);
@@ -120,6 +180,11 @@ const OwnedPlaylist = struct {
         for (new_rates, 0..) |*slot, k| {
             slot.* = if (k < rates.len) rates[k] else 0;
         }
+        const new_themes = try gpa.alloc(?u8, paths.len);
+        errdefer gpa.free(new_themes);
+        for (new_themes, 0..) |*slot, k| {
+            slot.* = if (k < themes.len) themes[k] else null;
+        }
         const new_name: []const u8 = if (list_name.len > 0)
             try gpa.dupe(u8, list_name)
         else
@@ -136,6 +201,7 @@ const OwnedPlaylist = struct {
             .entries = new_entries,
             .titles = new_titles,
             .rates = new_rates,
+            .themes = new_themes,
             .name = new_name,
             .order = new_order,
             .played = new_played,
@@ -152,6 +218,7 @@ pub const Player = struct {
     entries: []const []const u8,
     titles: []const ?[]const u8 = &.{},
     rates: []const u32 = &.{},
+    themes: []const ?u8 = &.{},
     name: []const u8 = "",
     owns_entries: bool = false,
     index: usize,
@@ -165,12 +232,14 @@ pub const Player = struct {
     live_rate_hz: u32 = 0,
     track_index: u32,
     src: ?format.MusicSource,
+    input: ?TrackInput = null,
     detached_path: ?[]u8 = null,
 
     pub const Config = struct {
         entries: []const []const u8,
         titles: []const ?[]const u8 = &.{},
         rates: []const u32 = &.{},
+        themes: []const ?u8 = &.{},
         name: []const u8 = "",
         tick_rate_hz: u32 = 0,
         track_index: u32 = 0,
@@ -191,6 +260,7 @@ pub const Player = struct {
             .entries = config.entries,
             .titles = config.titles,
             .rates = config.rates,
+            .themes = config.themes,
             .name = config.name,
             .index = 0,
             .tick_rate_hz = config.tick_rate_hz,
@@ -227,9 +297,15 @@ pub const Player = struct {
         self.titles = &.{};
         self.gpa.free(self.rates);
         self.rates = &.{};
+        self.gpa.free(self.themes);
+        self.themes = &.{};
         self.gpa.free(self.name);
         self.name = "";
         self.owns_entries = false;
+    }
+
+    pub fn themeForIndex(self: *const Player, idx: usize) ?u8 {
+        return if (idx < self.themes.len) self.themes[idx] else null;
     }
 
     pub fn rateForIndex(self: *const Player, idx: usize) u32 {
@@ -256,6 +332,64 @@ pub const Player = struct {
             s.deinit(self.gpa);
         }
         self.src = null;
+        if (self.input) |input| input.deinit(self.gpa);
+        self.input = null;
+    }
+
+    pub fn keepInput(self: *Player, path: []const u8, bytes: []const u8, from: format.Companions) !void {
+        const input = try TrackInput.init(self.gpa, path, bytes, from);
+        if (self.input) |old| old.deinit(self.gpa);
+        self.input = input;
+    }
+
+    /// A rebuilt source is returned and must replace the old one wherever it is shown.
+    pub fn seek(self: *Player, frames: u64) !?format.MusicSource {
+        const src = self.src orelse return null;
+        const input = if (self.input) |*kept| kept else return null;
+        const duration = src.durationFrames() orelse return null;
+        const target = @min(frames, duration -| 1);
+        const was_started = self.engine.started;
+        self.engine.stop();
+        errdefer if (was_started) self.engine.start() catch {};
+        const ended = self.bridge.halt_at_songend.load(.acquire) and self.bridge.loop_count.load(.acquire) > 0;
+        const parked = ended and self.bridge.paused.load(.acquire) and !self.engine.park_after_wait;
+        const fresh = self.engine.load(self.gpa, input.path, input.bytes, input.companions(), src.getTickRate() orelse 0, self.track_index) catch |err| {
+            self.engine.source = src;
+            return err;
+        };
+        errdefer {
+            self.engine.source = src;
+            fresh.deinit(self.gpa);
+        }
+        self.engine.source = fresh;
+        self.bridge.branch_request.store(std.math.maxInt(u32), .release);
+        self.bridge.position_frames.store(0, .release);
+        if (ended) self.bridge.loop_count.store(0, .release);
+        self.engine.skip(target);
+        self.engine.publishState();
+        if (parked) self.bridge.paused.store(false, .release);
+        if (was_started) try self.engine.start();
+        self.src = fresh;
+        src.deinit(self.gpa);
+        return fresh;
+    }
+
+    pub fn retargetArchiveTrack(self: *Player, index: u32) !bool {
+        const existing = self.src orelse return false;
+        if (existing.vtable.selectArchiveTrack == null) return false;
+        self.engine.stop();
+        errdefer if (self.src != null) self.engine.start() catch {};
+        if (!try self.engine.selectArchiveTrack(self.gpa, index)) {
+            try self.engine.start();
+            return false;
+        }
+        const src = self.engine.source.?;
+        self.src = src;
+        self.track_index = src.info().archive_track_index;
+        self.bridge.resetTrackState();
+        self.bridge.paused.store(false, .release);
+        try self.engine.start();
+        return true;
     }
 
     pub fn deinit(self: *Player) void {
@@ -330,7 +464,7 @@ pub const Player = struct {
 
     fn playPos(self: *const Player) usize {
         if (self.order.len == 0) return self.index;
-        return std.mem.indexOfScalar(usize, self.order, self.index) orelse self.order_pos;
+        return std.mem.findScalar(usize, self.order, self.index) orelse self.order_pos;
     }
 
     pub fn canStep(self: *const Player, dir: Direction) bool {
@@ -365,7 +499,7 @@ pub const Player = struct {
         var pos: i64 = @intCast(self.order_pos);
         var candidates: usize = n;
         while (candidates > 0) : (candidates -= 1) {
-            pos += @intFromEnum(dir);
+            pos += @backingInt(dir);
             if (pos < 0 or pos >= @as(i64, @intCast(n))) {
                 if (!self.loop_all) return null;
                 if (self.shuffle) {
@@ -393,10 +527,11 @@ pub const Player = struct {
         paths: []const []const u8,
         titles: []const ?[]const u8,
         rates: []const u32,
+        themes: []const ?u8,
         list_name: []const u8,
     ) !void {
         if (paths.len == 0) return error.EmptyPlaylist;
-        const built = try OwnedPlaylist.build(self.gpa, paths, titles, rates, list_name);
+        const built = try OwnedPlaylist.build(self.gpa, paths, titles, rates, themes, list_name);
         self.deinitEntries();
         self.deinitOrder();
         self.freeFlags(&self.played);
@@ -404,6 +539,7 @@ pub const Player = struct {
         self.entries = built.entries;
         self.titles = built.titles;
         self.rates = built.rates;
+        self.themes = built.themes;
         self.name = built.name;
         self.owns_entries = true;
         self.index = 0;
@@ -541,12 +677,14 @@ fn replaceEntriesOomBody(gpa: std.mem.Allocator, io: Io) !void {
         &[_][]const u8{ "a.hsc", "b.vgm" },
         &[_]?[]const u8{ "A", null },
         &.{},
+        &.{},
         "First List",
     );
     p.markPlayed(1);
     if (p.replaceEntries(
         &[_][]const u8{ "c.imf", "d.dro", "e.hsc" },
         &[_]?[]const u8{ null, "D", null },
+        &.{},
         &.{},
         "Second List",
     )) |_| {
@@ -570,6 +708,103 @@ fn replaceEntriesOomBody(gpa: std.mem.Allocator, io: Io) !void {
         try std.testing.expectEqual(@as(usize, 2), p.unplayable.len);
         return err;
     }
+}
+
+test "seek rebuilds the decoder from the kept input and runs it ahead to the target" {
+    const gpa = std.testing.allocator;
+    const opal = @import("opal");
+    var threaded: std.Io.Threaded = .init(gpa, .{});
+    defer threaded.deinit();
+
+    var data: [4 + 64 * 4]u8 = undefined;
+    @memcpy(data[0..4], &[_]u8{ 0x00, 0x00, 0x00, 0x00 });
+    for (0..64) |i| @memcpy(data[4 + i * 4 ..][0..4], &[_]u8{ 0xa0, @intCast(i + 1), 0x10, 0x00 });
+
+    var br = Bridge{};
+    var engine = AudioEngine{ .bridge = &br, .device = undefined, .chip = opal.Opal.init(44100) };
+    var p = Player{
+        .gpa = gpa,
+        .io = threaded.io(),
+        .engine = &engine,
+        .bridge = &br,
+        .entries = &.{},
+        .index = 0,
+        .tick_rate_hz = 0,
+        .track_index = 0,
+        .src = null,
+    };
+    defer p.deinit();
+    p.src = try engine.load(gpa, "song.imf", &data, .{}, 0, 0);
+    engine.source = p.src;
+    try p.keepInput("song.imf", &data, .{});
+
+    const duration = p.src.?.durationFrames().?;
+    const target = duration / 3;
+    const first = p.src.?;
+    const rebuilt = (try p.seek(target)).?;
+    try std.testing.expect(rebuilt.ptr != first.ptr);
+    try std.testing.expectEqual(rebuilt.ptr, p.src.?.ptr);
+    try std.testing.expectEqual(rebuilt.ptr, engine.source.?.ptr);
+    try std.testing.expectEqual(target, br.position_frames.load(.acquire));
+    const fnum = engine.chip.chan[0].f_number & 0xff;
+    try std.testing.expect(fnum > 1);
+
+    _ = try p.seek(duration * 2);
+    try std.testing.expectEqual(duration - 1, br.position_frames.load(.acquire));
+    try std.testing.expectEqual(@as(u16, 64), engine.chip.chan[0].f_number & 0xff);
+    _ = try p.seek(target);
+    try std.testing.expectEqual(target, br.position_frames.load(.acquire));
+    try std.testing.expectEqual(fnum, engine.chip.chan[0].f_number & 0xff);
+
+    p.src.?.setTickRate(700);
+    br.position_frames.store(12345, .release);
+    const fast_target = p.src.?.durationFrames().? / 2;
+    _ = try p.seek(fast_target);
+    var ref_br = Bridge{};
+    var ref = AudioEngine{ .bridge = &ref_br, .device = undefined, .chip = opal.Opal.init(44100) };
+    const ref_src = try ref.load(gpa, "song.imf", &data, .{}, 700, 0);
+    defer ref_src.deinit(gpa);
+    ref.source = ref_src;
+    ref.skip(fast_target);
+    try std.testing.expectEqual(fast_target, br.position_frames.load(.acquire));
+    try std.testing.expectEqual(ref.chip.chan[0].f_number & 0xff, engine.chip.chan[0].f_number & 0xff);
+
+    br.halt_at_songend.store(true, .release);
+    br.loop_count.store(1, .release);
+    br.paused.store(true, .release);
+    br.branch_request.store(3, .release);
+    _ = try p.seek(target);
+    try std.testing.expectEqual(@as(u32, 0), br.loop_count.load(.acquire));
+    try std.testing.expect(!br.paused.load(.acquire));
+    try std.testing.expectEqual(std.math.maxInt(u32), br.branch_request.load(.acquire));
+
+    br.loop_count.store(1, .release);
+    br.paused.store(true, .release);
+    engine.park_after_wait = true;
+    _ = try p.seek(target);
+    try std.testing.expectEqual(@as(u32, 0), br.loop_count.load(.acquire));
+    try std.testing.expect(br.paused.load(.acquire));
+}
+
+test "capability check rejects tracker without a pattern view" {
+    const Dummy = struct {
+        pub fn step(_: *@This(), _: format.Chip) format.StepResult {
+            return .{ .frames = 1 };
+        }
+        pub fn info(_: *@This()) format.TrackInfo {
+            return .{ .format_name = "test", .visualizer = "tracker" };
+        }
+        pub fn deinit(_: *@This(), _: std.mem.Allocator) void {}
+    };
+    var src_state = Dummy{};
+    const src = format.MusicSource.init(&src_state, "tracker");
+    const viz = visualizer.find("tracker").?;
+    try std.testing.expect(!view.ViewCaps.subsetOf(viz.requires, src.views().caps()));
+    try std.testing.expect(visualizer.find("nope") == null);
+    const stream = visualizer.find("stream").?;
+    try std.testing.expect(view.ViewCaps.subsetOf(stream.requires, src.views().caps()));
+    const sequence = visualizer.find("sequence").?;
+    try std.testing.expect(!view.ViewCaps.subsetOf(sequence.requires, src.views().caps()));
 }
 
 test "chip label keeps Dual OPL2 and ignores GD3 system names" {
@@ -616,7 +851,7 @@ test "reshuffleWrap covers every track and never opens with the current one" {
         const pos = reshuffleWrap(&order, prng.random(), .next, 2);
         try std.testing.expectEqual(@as(usize, 0), pos);
         try std.testing.expect(order[0] != 2);
-        var seen = [_]bool{false} ** 5;
+        var seen: [5]bool = @splat(false);
         for (order) |idx| {
             try std.testing.expect(idx < 5);
             try std.testing.expect(!seen[idx]);
@@ -634,7 +869,7 @@ test "buildOrder shuffle keeps current first and covers every track" {
     const start = buildOrder(&order, true, 3, prng.random());
     try std.testing.expectEqual(@as(usize, 0), start);
     try std.testing.expectEqual(@as(usize, 3), order[0]);
-    var seen = [_]bool{false} ** 5;
+    var seen: [5]bool = @splat(false);
     for (order) |idx| {
         try std.testing.expect(idx < 5);
         try std.testing.expect(!seen[idx]);

@@ -1,0 +1,7 @@
+#EXTM3U
+#PLAYLIST:Miles AIL XMIDI
+# Original AIL demo with three sequences. Use comma and period to select them.
+# SAMPLE.AD is fetched from the same directory.
+
+#EXTINF:-1,Miles AIL demo (Couple Days Off, Row Row Row Your Boat, An Die Freude)
+https://raw.githubusercontent.com/mattseabrook/XMI2MID/main/Reference/AIL2/DEMO.XMI

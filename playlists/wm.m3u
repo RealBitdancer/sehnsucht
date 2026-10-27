@@ -1,0 +1,50 @@
+#EXTM3U
+#PLAYLIST:MusicV
+# Remote MusicV set. Silky's MUSICV_2.COM OPL3 sequencer (`.wm` / `.m`).
+# Root `.wm` files from AdPlug's format-library zip. GitHub Pages serves
+# the zip, not members, so the player fetches MusicV.zip and unpacks.
+# Archive.org-style hosts that already unpack `.zip/` still work as-is.
+# Modland has no MusicV folder.
+
+#EXTINF:-1,Silky's - Ayasii
+https://adplug.github.io/library/files/MusicV.zip/AYASII.WM
+#EXTINF:-1,Silky's - Badend
+https://adplug.github.io/library/files/MusicV.zip/BADEND.WM
+#EXTINF:-1,Silky's - Bakuhatu
+https://adplug.github.io/library/files/MusicV.zip/BAKUHATU.WM
+#EXTINF:-1,Silky's - Comical
+https://adplug.github.io/library/files/MusicV.zip/COMICAL.WM
+#EXTINF:-1,Silky's - Dungion
+https://adplug.github.io/library/files/MusicV.zip/DUNGION.WM
+#EXTINF:-1,Silky's - Ending
+https://adplug.github.io/library/files/MusicV.zip/ENDING.WM
+#EXTINF:-1,Silky's - Escape
+https://adplug.github.io/library/files/MusicV.zip/ESCAPE.WM
+#EXTINF:-1,Silky's - Gisiki
+https://adplug.github.io/library/files/MusicV.zip/GISIKI.WM
+#EXTINF:-1,Silky's - Himei
+https://adplug.github.io/library/files/MusicV.zip/HIMEI.WM
+#EXTINF:-1,Silky's - Jungle
+https://adplug.github.io/library/files/MusicV.zip/JUNGLE.WM
+#EXTINF:-1,Silky's - Mizuabi
+https://adplug.github.io/library/files/MusicV.zip/MIZUABI.WM
+#EXTINF:-1,Silky's - Nettori
+https://adplug.github.io/library/files/MusicV.zip/NETTORI.WM
+#EXTINF:-1,Silky's - Nukiasi
+https://adplug.github.io/library/files/MusicV.zip/NUKIASI.WM
+#EXTINF:-1,Silky's - Rashi
+https://adplug.github.io/library/files/MusicV.zip/_RASHI.WM
+#EXTINF:-1,Silky's - Sazanami
+https://adplug.github.io/library/files/MusicV.zip/SAZANAMI.WM
+#EXTINF:-1,Silky's - Se1
+https://adplug.github.io/library/files/MusicV.zip/SE1.WM
+#EXTINF:-1,Silky's - Setunai
+https://adplug.github.io/library/files/MusicV.zip/SETUNAI.WM
+#EXTINF:-1,Silky's - Sonotoki
+https://adplug.github.io/library/files/MusicV.zip/SONOTOKI.WM
+#EXTINF:-1,Silky's - Title
+https://adplug.github.io/library/files/MusicV.zip/TITLE.WM
+#EXTINF:-1,Silky's - Vacance
+https://adplug.github.io/library/files/MusicV.zip/VACANCE.WM
+#EXTINF:-1,Silky's - Yasuragi
+https://adplug.github.io/library/files/MusicV.zip/YASURAGI.WM

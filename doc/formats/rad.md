@@ -1,18 +1,18 @@
 # RAD (Reality Adlib Tracker)
 
 **Extensions:** `.rad` (case-insensitive)
-**Chip:** OPL2 (v1.0), OPL3-capable layout (v2.1)
+**Chip:** OPL2 (v1.0), OPL3 (v2.1)
 **Module:** `src/formats/rad.zig`
 
 A nine-channel tracker module from Reality Adlib Tracker. Version 1.0 stores
 compact 2-op instruments and pointer-based patterns. Version 2.1 adds optional
 BPM, instrument names, 4-op algorithms, and riffs. sehnsucht plays both file
-versions for the main order list and patterns. Instrument riffs and channel
-riffs in v2 are skipped at load time.
+versions, including v2 instrument riffs and channel riffs.
 
 External reference:
-public-domain RAD player by Shayde/Reality (embedded in
-[AdPlug `rad2.cpp`](https://github.com/adplug/adplug/blob/master/src/rad2.cpp)).
+[Reality Adlib Tracker documentation](https://www.3eality.com/productions/reality-adlib-tracker/docs)
+and Shayde/Reality's player included in the
+[official release](https://www.3eality.com/Public/Releases/RAD/radv2_0a.zip).
 
 ## Identification
 
@@ -78,9 +78,13 @@ Repeated until instrument number `0`:
 
 **v2:** name length, name bytes, algorithm byte, then either 23 bytes of 2/4-op
 data or 6 bytes of MIDI data, optional riff payload when algorithm bit 7 is set.
-sehnsucht keeps the first two operators for playback and skips riff bodies.
+All four operators, both feedback values, both panning fields, detune, and
+instrument riffs are retained. Algorithms 0 and 1 use two operators.
+Algorithms 2 and 3 use hardware four-operator pairing where available.
+Algorithms 4 through 6 combine two independent two-operator voices.
+MIDI instruments are exposed for inspection but do not produce OPL audio.
 
-Instrument numbers are 1-based. Missing numbers stay blank.
+Instrument numbers are 1-based. Missing numbers stay blank and silent.
 
 ### Order list
 
@@ -89,10 +93,11 @@ Instrument numbers are 1-based. Missing numbers stay blank.
 | Order count | 1 |
 | Entries | count bytes |
 
-Bit 7 set means a jump marker: low 7 bits are the new order index. The jump
-is applied when playback advances onto that slot, not when the slot is the
-one currently playing. Playing a jump slot uses the low 7 bits as a pattern
-index.
+Bit 7 set means a jump marker. The low seven bits are the new order index.
+The decoder resolves one jump on entry, including the initial slot, following
+the original player. Jump destinations must fit inside the order list.
+Forward jumps continue the pass. Re-entering a visited order ends it after
+the preceding row has received its full duration.
 
 ### Patterns
 
@@ -101,6 +106,11 @@ Each pattern is a packed line stream (see below).
 
 **v2:** sequence of `(pattern_number, size, data)` until pattern number `0xFF`.
 Pattern numbers are 0..99.
+
+Channel riffs follow the pattern list, with a packed row and column identifier
+and the same length-prefixed line encoding. Instrument riffs use columns for
+notes and individual operator commands. Each riff has its own speed, row,
+transposition, effect state, and last-instrument latch.
 
 ### Packed line stream
 
@@ -118,9 +128,9 @@ the effect nibble is non-zero, one parameter byte follows. Note high bit adds
 optional effect+param (bit 4). Note high bit retriggers that channel's last
 instrument. Reality stores this as `CChannel.LastInstrument` and resolves it
 while playing, not while unpacking the file. The tracker view draws a
-retriggered note 1..12 as an ordinary note. A retrigger with note 0 (invalid
-in Reality's validator) still loads the last instrument and is drawn as an
-instrument-set with argument 0.
+retriggered note 1..12 as an ordinary note with `R` in the extra column. A
+retrigger with note 0 (invalid in Reality's validator) still loads the last
+instrument and is drawn as an empty note with the same `R`.
 
 Note values 1..12 are C..B. Note 15 is key-off. A pattern holds at most 64
 lines. Streams with more are invalid.
@@ -142,12 +152,15 @@ the end of the file, is not a short last note. That file is `error.InvalidRad`.
 1. Validate magic and version.
 2. Read flags, optional BPM, optional description.
 3. Load instruments and order list.
-4. Unpack every pattern into sparse line lists and a dense tracker view.
+4. Unpack patterns and riffs into owned sparse line lists, and build the
+   main pattern view.
 5. Initialise OPL registers (waveforms on, no drums). v2 also enables OPL3 mode
    register `0x105`.
 
-Each `step` advances the tracker by one timer tick: decrement speed counter,
-play the current line when it expires, then apply continuous slides.
+Each `step` advances instrument riffs, then channel riffs, then the main
+pattern when its speed counter expires. Continuous effects follow in that
+same order. Riff transposition, local speed changes, and line jumps do not
+replace the main pattern's state. Recursive riff calls have a fixed depth bound.
 
 ### Effects (main track)
 
@@ -162,6 +175,10 @@ play the current line when it expires, then apply continuous slides.
 | D | Jump to line |
 | F | Set speed |
 
+Version 2 also implements `R` (riff), `T` (transposed riff), `I` (ignore
+instrument-riff transposition), and the instrument-riff commands `M`
+(operator multiplier), `U` (feedback), and `V` (operator volume).
+
 ## Timing
 
 | Condition | Rate |
@@ -175,9 +192,14 @@ Speed is the number of ticks per row. Frame conversion uses
 
 ## Playback
 
-RAD uses the tracker visualizer. Order wrap and jump markers set a song
-boundary so playlists can advance. Single-file play loops from the start of the
-order list.
+RAD uses the tracker visualizer. Pattern channel metadata maps its nine
+logical tracks onto their physical OPL voices. The spectrum covers all
+eighteen v2 voices. Instrument inspection includes all four operators,
+feedback, panning, and detune.
+
+Returning to a visited order sets a song boundary so playlists can advance.
+Single-file repetition continues from that destination with the current
+instruments and effect state.
 
 Instrument load is the only event that sets key-on (Reality `fKeyOn`). A note
 in 1..12 without an instrument byte (and without the retrigger bit) changes
@@ -186,8 +208,8 @@ retrigger bit is the usual way a later note reloads the last patch and bounces.
 An instrument byte still updates that channel's last-instrument latch even when
 the row is a tone slide (Reality records `LastInstrument` in `UnpackNote` before
 `PlayNote` skips the load), and even when that number is past the highest
-instrument defined in the file. A later retrigger then has nothing to load,
-instead of bouncing the previous valid patch.
+instrument defined in the file. A later retrigger then loads that blank,
+silent patch instead of bouncing the previous valid patch.
 
 ## Metadata
 
@@ -204,17 +226,3 @@ has no separate artist field.
 | Pattern with more than 64 lines, or a row past 63 | `error.InvalidRad` |
 | v2 pattern size missing or past the end of the file | `error.InvalidRad` |
 | Truncated note payload after a valid line | Keep the decoded cells and play |
-
-## Compatibility notes
-
-* v2 instrument riffs, channel riffs, MIDI instruments, and full 4-op voice
-  pairing are not expanded during playback. Main-order 2-op patterns still play.
-* Only the first description line becomes the title. Later lines and control
-  codes are dropped.
-* v2 instrument panning is ignored. Every channel plays centred with both
-  outputs enabled.
-* Pattern numbers referenced in the order list but missing from the file are
-  treated as empty patterns.
-* A file whose last line is short of a parameter byte still plays, losing only
-  that tail. A v2 pattern header whose size word is missing or overruns is
-  rejected. The reference player treats a short last parameter as unplayable.

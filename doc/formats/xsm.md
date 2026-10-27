@@ -5,7 +5,7 @@
 **Module:** `src/formats/xsm.zig`
 
 A nine-channel OPL2 note grid written for Davey W. Taylor's QBasic FMLIB
-player (`SOUND.ABC`, 1997). There is no tracker, no effect column, and no
+player (`SOUND.ABC`, 1997). It stores a fixed note grid without effects or a
 companion file. Each channel has one instrument for the whole song.
 
 External reference:
@@ -110,8 +110,9 @@ Duration is `songlen * sample_rate / 5`. The rate is not adjustable.
 
 ## Playback
 
-XSM uses the stream visualizer and OPL2. NEW stays off. `C0` is written as
-stored.
+XSM uses the tracker visualizer and OPL2. NEW stays off. `C0` is written as
+stored. One pattern of `songlen` rows, rest cells as `RST`, nine instruments
+named CH1..CH9. There is no order list.
 
 After the last row, the decoder rewinds to row 0 and reports a song
 boundary (`done`). There is no native loop point in the file. The source
@@ -128,20 +129,3 @@ back to the file name without its extension.
 Paths without `.xsm` are not claimed. Wrong magic or `songlen > 3200`
 declines the file. A valid magic with a truncated header, a zero length, or
 a note block shorter than `songlen * 9` returns `error.InvalidXsm`.
-
-## Compatibility notes
-
-* AdPlug also caps `songlen` at 3200 and ignores trailing bytes. The four
-  known songs (`child1`, `easy1`, `fantasy1`, `jungle1`) are the FMLIB demo
-  set. No later XSM files are known.
-* AdPlug writes feedback as `0xC0 + op_table[i]`, so voices 3-8 land on
-  `C8`, `C9`, `CA`, `D0`, `D1`, and `D2`. sehnsucht writes `0xC0 + voice`
-  (`C0`..`C8`), the real OPL feedback registers, same as BAM. Channels 3-8
-  will not match AdPlug's timbre.
-* AdPlug's end tick resets the row counters and then plays row 0 again as
-  part of that same update. sehnsucht rewinds and reports `done` without
-  emitting that extra row. The next `step` after the boundary plays row 0.
-* AdPlug accepts `songlen == 0` and then indexes an empty note buffer.
-  sehnsucht returns `error.InvalidXsm`.
-* The original QBasic player is FMLIB in the All BASIC Code archive. Davey
-  W. Taylor's later FM Tracker uses an incompatible format.

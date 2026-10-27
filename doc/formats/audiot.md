@@ -65,10 +65,10 @@ AUDIOHED.CK4   -> AUDIOT.CK4, falling back to AUDIO.CK4, plus AUDIODCT.CK4
 
 Resolve companions in the same directory. The same rule applies to URL paths.
 The decoder performs no I/O: it declares the companions through
-`Format.sibling_path`, `Format.sibling_alt_path`, and `Format.sibling2_path`,
-and the player hands it the bytes in `LoadContext.sibling` and
-`LoadContext.sibling2`, with `LoadContext.sibling_is_alt` reporting when the
-fallback was the file that loaded. The dictionary read is tolerant: for an
+`companions`, which returns a `CompanionPaths` value, and the player hands
+it the bytes in `LoadContext.sibling` and `LoadContext.sibling2`, with
+`LoadContext.sibling_is_alt` reporting when the fallback was the file that
+loaded. The dictionary read is tolerant: for an
 uncompressed set its absence is normal, and the decoder demands it only when
 the compressed data file is the one in hand.
 
@@ -97,7 +97,8 @@ causing the whole archive to fail. The archive is empty if no valid pair
 remains.
 
 Muse archives may contain `0xFFFFFFFF` placeholders and `!ID!` section tags.
-sehnsucht gives them no special meaning beyond the checks above.
+Valid chunks retain their original slot indexes so section boundaries can
+guide music selection.
 
 ### Compressed chunks
 
@@ -127,30 +128,31 @@ sound slots, then IMF music. The exact starting slot for music belongs to the
 game executable or its generated C header. It is not stored as a portable
 field in the archive.
 
-sehnsucht does not parse the sound-effect formats. It finds music candidates
-with this rule:
+When the first two `!ID!` section endings identify equal-sized PC-speaker
+and AdLib groups, and the following digitized group contains only empty
+slots or section tags, music starts after those three groups. Earlier chunks
+are skipped. Otherwise the decoder examines every valid chunk.
 
-```text
-chunk_size >= 400 AND first_four_bytes != "RIFF"
-```
+Each candidate must contain complete IMF records, recognized OPL2 register
+addresses, and at least one nonzero delay. Length headers must fit the chunk.
+Short songs are accepted. Size alone cannot turn a sound effect into music,
+and a malformed candidate cannot prevent a later valid song from loading.
+Accepted streams remain in header order.
 
-Candidates remain in header order. This is a practical filter, not part of the
-Muse container specification. A large non-IMF chunk may pass it, and an
-unusually small IMF chunk may not.
+Archives without usable section markers still lack explicit type information.
+Record validation cannot distinguish arbitrary data deliberately arranged to
+look exactly like an IMF stream. The decoder does not claim otherwise.
 
-In a compressed archive the rule applies to the expanded data. Chunks whose
-expanded size is below the threshold are skipped without decompression. All
-expansions of one archive share a 16 MiB budget (the player's input cap):
-a chunk whose expanded size does not fit in the remaining budget is skipped,
-so a hostile header that lists the same byte range many times cannot expand
-without bound.
+Compressed chunks are validated after expansion. Expanded data and the two
+slice entries retained per song share a 16 MiB budget (the player's input
+cap). An expansion that cannot fit is skipped. Chunks smaller than one IMF
+record are skipped without expansion.
 
-Expansion attempts share a second budget of twice the input cap, charged by
-compressed size before each Huffman walk. An attempt that fails or is
-discarded afterwards keeps its charge, and a chunk larger than the remaining
-budget ends the scan. A hostile header can therefore neither retain unbounded
-output nor buy unbounded decompression work. Chunks rejected by the size
-checks above never reach the Huffman walker and cost no work budget.
+Candidate scanning has a separate budget of twice the input cap. It counts
+compressed bytes before each Huffman walk, or raw chunk bytes before record
+validation. Failed and discarded candidates retain their charge. A chunk
+larger than the remaining budget ends the scan. This bounds repeated work
+when a malformed offset table refers to overlapping ranges.
 
 ### Track numbering
 
@@ -173,29 +175,36 @@ sehnsucht AUDIOHED.CK4
 ```
 
 The **,** / **.** keys select the previous / next candidate and wrap after
-the last one. That index is per archive: advancing to another playlist
-entry, jumping, or opening a file from Browse starts the new archive at
-track 1. Replaying the same file (rate change, oneshot Space) keeps the
-current index. An R rate chosen on this archive stays for those reloads. A
-playlist skip or Enter jump clears it unless you launched with `--rate`.
+the last one. AudioT keeps only the selected IMF stream, so those keys still
+go through the loader (fetch, decode, duration). Extra presses while that
+fetch is in flight update the pending subtrack on the same bytes. They do
+not start a second download or cancel a playlist advance. That index is per
+archive: advancing to another playlist entry, jumping, or opening a file
+from Browse starts the new archive at track 1. Replaying the same file (rate
+change, oneshot Space) keeps the current index. An R rate chosen on this
+archive stays for those reloads. A playlist skip or Enter jump clears it
+unless you launched with `--rate`.
 
 ### IMF inside a chunk
 
-The selected chunk uses the plain IMF framing described in
-[imf.md](imf.md). The `ADLIB` metadata wrapper is not checked inside AudioT.
+The selected stream uses the plain IMF records described in
+[imf.md](imf.md). AudioT validates framing before adding a song to its list.
+The `ADLIB` metadata wrapper is not checked inside AudioT.
 
-1. Require at least four chunk bytes.
-2. Read the first little-endian `u16`.
-3. If it is zero, use the whole chunk as a type-0 command stream.
-4. Otherwise use bytes after the prefix, clamped to the declared type-1 byte
-   length.
-5. Decode complete four-byte IMF records.
+1. Require at least four bytes.
+2. Try the two-byte length, then the early four-byte length. The declared
+   stream must fit exactly, optionally followed by an 88-byte Muse footer
+   and a `!ID!` section tag. Matching bytes inside the declared stream remain
+   music data.
+3. If neither length fits, a leading zero word permits a bare command stream,
+   with a trailing section tag removed.
+4. Require complete four-byte records and at least one nonzero delay.
+   Register addresses must belong to the OPL2 control, operator, frequency,
+   rhythm, feedback, or waveform ranges. Register zero permits dummy writes.
 
-Type-1 lengths normally exclude Muse footer data. Type-0 chunks do not provide
-that boundary, so trailing bytes may be interpreted as commands.
-
-Early archives can use a four-byte IMF length. sehnsucht does not implement
-that variant and reads only the two-byte form.
+Muse footer padding is not required to be zero. Real files contain unused
+bytes left by the editor. Those bytes do not become register writes. A
+truncated length-prefixed stream is rejected rather than clamped.
 
 ## Timing
 
@@ -216,7 +225,10 @@ Enter jump returns to the path default unless you launched with `--rate`.
 ## Playback
 
 The selected command stream uses the IMF decoder, OPL2, and the stream
-visualizer. It loops like standalone IMF.
+visualizer. A single archive repeats the selected member. A multi-entry
+playlist advances at its song boundary. The display shows OPL voices,
+register activity, and the selected IMF rate. Digitized sounds and PC-speaker
+effects in the same archive are not played.
 
 ## Metadata
 
@@ -241,18 +253,16 @@ so a playlist title may replace it in the player header.
 | AUDIOHED size is invalid | `BadAudioHed` |
 | No valid offset pair | `EmptyAudioT` |
 | No chunk passes the music filter | `NoMusicInAudioT` |
-| Selected chunk cannot enter IMF framing | `BadImfInAudioT` |
-
-A candidate that passes the size and `RIFF` filter can still fail IMF framing.
-That fails the archive. The decoder does not try the next candidate.
 
 Companion file read errors propagate from the underlying file or network I/O.
 A corrupt dictionary or a truncated compressed chunk skips that chunk rather
 than failing the archive.
 
-## Compatibility notes
+## Validation
 
-Four-byte early IMF lengths are unsupported. Music detection uses the size and
-`RIFF` filter described above rather than game-specific `STARTMUSIC` tables.
-Compressed sets need the extracted `AUDIOHED.*` and `AUDIODCT.*` files beside
-`AUDIO.*`, since the originals live inside the game executable.
+The Wolfenstein shareware archive yields eleven songs and the compressed
+Keen 4 shareware archive yields six. Every selected stream matched the
+independently extracted register records and total timing, and produced
+nonzero audio during a five-second render. Tests cover short songs, long
+length fields, Muse footers, sound-effect lookalikes, section markers,
+input ownership, and scan and expansion limits.

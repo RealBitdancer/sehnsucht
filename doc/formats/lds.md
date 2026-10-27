@@ -105,8 +105,9 @@ its own word index and walks that stream with a private cursor.
    is 0 or above 255.
 4. Load patches, order slots, and the word pool.
 5. Scan the pool for command `0xF9`. If any word has that high byte,
-   `TrackInfo.loop` is true. Playback reports a song boundary only when a
-   jump lands on the current order or an earlier one.
+   `TrackInfo.loop` is true. A jump reports a song boundary only when it
+   lands on the current order or an earlier one. A stop, or running past the
+   last order, also reports one.
 6. Initialise nine OPL2 voices, enable waveforms (`0x01` = `0x20`), write
    `0x08` = `0`, write the header `0xBD` value, and silence the nine voices.
 
@@ -120,8 +121,8 @@ of 0 means a row on every remaining step.
 
 A note word is any nonzero word whose high byte is below `0x80`. The high
 byte is the note in semitones (zero is a valid note). The low byte is the
-patch index, masked to 6 bits. Frequency uses the Loudness
-16-steps-per-octave table.
+patch index, masked to 6 bits. Frequency uses the Loudness table of 16 steps
+per semitone (192 per octave).
 
 An out-of-range pattern cursor reads `0x8001`, matching AdPlug. That word is
 a wait with extra 1: the current pattern row is silent, then one more silent
@@ -177,17 +178,15 @@ rows fire every `tempo + 1` PIT ticks.
 LDS always uses OPL2 and the tracker visualizer.
 
 The on-disk order is nine pattern pointers per slot, not one shared pattern
-index. `TrackerView` cannot store that. The decoder builds an identity order
-list (`0`, `1`, `2`, ...) and treats each slot as one synthetic pattern of
-`pattlen` rows. The packed word pool is kept as stored. When the tracker
-view asks for a cell, the decoder walks that channel's stream up to the
-requested row. A cell is whatever the stream does on that pattern row,
-including waits. The cursor row is a pattern row, not a PIT tick and not a
-packed-command index. `TrackerPos` is snapshotted on the row that just
-sounded, as HSC and RAD do, so the highlight stays on that row until the
-next one plays.
-
-`TrackerPos.speed` is the tempo byte. The PIT divisor does not fit that field.
+index. The ORDER pane shows the current slot as `n/len` and the nine
+channel refs (`1:012+0n`, channel from one, start in hex, transpose, `n` or
+`i` target).
+Each slot is one synthetic pattern of `pattlen` rows. The packed word pool
+is kept as stored. Display cells are built at load. The cursor row is a
+pattern row, not a PIT tick and not a packed-command index. Playhead
+includes PIT divisor and tempo. Patch finetune and arpeggio length/speed
+are on the instrument title (`SL`, `ARP`). Playhead prints `Tempo` as the
+current tempo, which a `0xFE` command can change, and `PIT` from the divisor.
 
 A loop jump reports a song boundary and continues from the destination. A
 stop reports a song boundary and leaves the source idle until the next
@@ -207,25 +206,3 @@ its extension. Labels: `LDS` or `LD0` from the path.
 | Truncated header | Decline (`null`) |
 | Zero speed or pattern length | `error.InvalidLds` |
 | Patch count above 63, order count 0 or above 255, or sections that do not fit | `error.InvalidLds` |
-
-## Compatibility notes
-
-* LDS was added because it is self-contained OPL2 with a Modland folder
-  (Tyrian, Fuzzy's World, and others). It does not need a companion bank.
-* Digital sample fields and the digital-sound count are ignored. AdPlug and
-  OpenTyrian do the same. sehnsucht has no PCM path for them.
-* AdPlug treats only `jumppos < posplay` as a loop. A one-order song that
-  jumps to itself would never report a boundary. sehnsucht treats a jump to
-  the current order as a loop as well.
-* AdPlug reads an arpeggio length above 12 past the table into the next
-  channel field. sehnsucht clamps the length to 12.
-* `TrackerCell` shows a note plus the patch index. Wait rows are empty.
-  Command `0xFB` is a note-off cell. Other commands `0xF0`..`0xFF` and
-  `0x81`..`0x9F` are effect cells whose argument is the command byte (the
-  high byte, not the operand). Per-channel transpose is applied to the
-  displayed note or patch. It is not drawn as its own column.
-* Tyrian ships songs concatenated in `MUSIC.MUS`. sehnsucht plays split `.lds`
-  rips, not that archive. Remote list: `playlists/lds.m3u`.
-* GNU `ld` linker scripts and ld-decode captures also use `.lds`. A first
-  byte above 2 declines those. A recognized mode with counts that do not fit
-  is `error.InvalidLds`, not a silent skip. There is no file-size cap.

@@ -77,23 +77,6 @@ pub const TextAttributeOverrides = struct {
     }
 };
 
-pub const ColorOverride = struct {
-    field: []const u8,
-    value: vaxis.Color,
-};
-
-pub const TypographyOverride = struct {
-    field: []const u8,
-    attributes: TextAttributeOverrides,
-};
-
-pub const ThemeOverrides = struct {
-    colors: []const ColorOverride = &.{},
-    typography: []const TypographyOverride = &.{},
-    vu_stops: ?[3]VuStop = null,
-    peak_stops: ?[3]VuStop = null,
-};
-
 pub const Colors = struct {
     bg: vaxis.Color,
     shell_fill_fg: vaxis.Color,
@@ -205,6 +188,44 @@ pub const Colors = struct {
     meter_off_fg: vaxis.Color,
     master_label_fg: vaxis.Color,
     vu_empty_fg: vaxis.Color,
+
+    trk_summary_fg: vaxis.Color,
+    trk_focus_fg: vaxis.Color,
+    trk_focus_bg: vaxis.Color,
+    trk_live_fg: vaxis.Color,
+    vol_cell_fg: vaxis.Color,
+    fx_letter_fg: vaxis.Color,
+    ch_pcm_fg: vaxis.Color,
+    ch_control_fg: vaxis.Color,
+    ch_drum_fg: vaxis.Color,
+    ch_4op_fg: vaxis.Color,
+    ch_page_fg: vaxis.Color,
+    macro_pos_fg: vaxis.Color,
+    note_fixed_fg: vaxis.Color,
+    voice_key_on_fg: vaxis.Color,
+    voice_key_off_fg: vaxis.Color,
+    dump_reg_fg: vaxis.Color,
+    dump_val_fg: vaxis.Color,
+    seq_track_fg: vaxis.Color,
+    seq_event_fg: vaxis.Color,
+    order_ptr_fg: vaxis.Color,
+};
+
+pub const ColorOverride = struct {
+    field: std.meta.FieldEnum(Colors),
+    value: vaxis.Color,
+};
+
+pub const TypographyOverride = struct {
+    field: std.meta.FieldEnum(Typography),
+    attributes: TextAttributeOverrides,
+};
+
+pub const ThemeOverrides = struct {
+    colors: []const ColorOverride = &.{},
+    typography: []const TypographyOverride = &.{},
+    vu_stops: ?[3]VuStop = null,
+    peak_stops: ?[3]VuStop = null,
 };
 
 pub const Theme = struct {
@@ -215,16 +236,14 @@ pub const Theme = struct {
     vu_stops: *const [3]VuStop,
     peak_stops: *const [3]VuStop,
 
-    pub fn color(comptime field: []const u8, value: vaxis.Color) ColorOverride {
-        if (!@hasField(Colors, field)) @compileError("unknown theme color role: " ++ field);
+    pub fn color(comptime field: std.meta.FieldEnum(Colors), value: vaxis.Color) ColorOverride {
         return .{ .field = field, .value = value };
     }
 
     pub fn text(
-        comptime field: []const u8,
+        comptime field: std.meta.FieldEnum(Typography),
         attributes: TextAttributeOverrides,
     ) TypographyOverride {
-        if (!@hasField(Typography, field)) @compileError("unknown theme typography role: " ++ field);
         return .{ .field = field, .attributes = attributes };
     }
 
@@ -238,7 +257,7 @@ pub const Theme = struct {
             const colors = blk: {
                 var out = base.colors.*;
                 for (overrides.colors) |item| {
-                    @field(out, item.field) = item.value;
+                    @field(out, @tagName(item.field)) = item.value;
                 }
                 break :blk out;
             };
@@ -246,7 +265,8 @@ pub const Theme = struct {
             const typography = blk: {
                 var out = base.typography.*;
                 for (overrides.typography) |item| {
-                    @field(out, item.field) = item.attributes.merge(@field(out, item.field));
+                    const name = @tagName(item.field);
+                    @field(out, name) = item.attributes.merge(@field(out, name));
                 }
                 break :blk out;
             };
@@ -367,6 +387,38 @@ pub const Theme = struct {
         peak_label,
         master_label,
         meter_empty,
+        trk_summary,
+        trk_focus,
+        trk_live,
+        vol_cell,
+        fx_letter,
+        ch_pcm,
+        ch_control,
+        ch_drum,
+        ch_4op,
+        ch_page,
+        macro_pos,
+        note_fixed,
+        voice_key_on,
+        voice_key_off,
+        dump_reg,
+        dump_val,
+        seq_track,
+        seq_event,
+        order_ptr,
+        volume_gauge_on,
+        volume_gauge_off,
+        progress_on,
+        progress_off,
+        list_row,
+        list_cursor,
+        scroll_track,
+        scroll_thumb,
+        browse_dir,
+        playlist_playing,
+        playlist_played,
+        playlist_dead,
+        playlist_dead_mark,
     };
 
     pub fn style(self: Theme, comptime role: Role) vaxis.Style {
@@ -453,12 +505,39 @@ pub const Theme = struct {
             .peak_label => t.body.apply(c.peak_label_fg, c.info_bar_bg),
             .master_label => t.body.apply(c.master_label_fg, c.bg),
             .meter_empty => t.meter.apply(c.vu_empty_fg, c.bg),
+            .trk_summary => t.body.apply(c.trk_summary_fg, c.bg),
+            .trk_focus => t.selected.apply(c.trk_focus_fg, c.trk_focus_bg),
+            .trk_live => t.emphasis.apply(c.trk_live_fg, c.bg),
+            .vol_cell => t.body.apply(c.vol_cell_fg, c.bg),
+            .fx_letter => t.body.apply(c.fx_letter_fg, c.bg),
+            .ch_pcm => t.body.apply(c.ch_pcm_fg, c.bg),
+            .ch_control => t.body.apply(c.ch_control_fg, c.bg),
+            .ch_drum => t.body.apply(c.ch_drum_fg, c.bg),
+            .ch_4op => t.body.apply(c.ch_4op_fg, c.bg),
+            .ch_page => t.body.apply(c.ch_page_fg, c.bg),
+            .macro_pos => t.emphasis.apply(c.macro_pos_fg, c.bg),
+            .note_fixed => t.body.apply(c.note_fixed_fg, c.bg),
+            .voice_key_on => t.body.apply(c.voice_key_on_fg, c.bg),
+            .voice_key_off => t.body.apply(c.voice_key_off_fg, c.bg),
+            .dump_reg => t.body.apply(c.dump_reg_fg, c.bg),
+            .dump_val => t.body.apply(c.dump_val_fg, c.bg),
+            .seq_track => t.body.apply(c.seq_track_fg, c.bg),
+            .seq_event => t.body.apply(c.seq_event_fg, c.bg),
+            .order_ptr => t.body.apply(c.order_ptr_fg, c.bg),
+            .volume_gauge_on => t.body.apply(c.volume_gauge_on_fg, c.bg),
+            .volume_gauge_off => t.body.apply(c.volume_gauge_off_fg, c.bg),
+            .progress_on => t.body.apply(c.progress_on_fg, c.bg),
+            .progress_off => t.body.apply(c.progress_off_fg, c.bg),
+            .list_row => t.body.apply(c.list_row_fg, c.bg),
+            .list_cursor => t.selected.apply(c.list_cursor_fg, c.list_cursor_bg),
+            .scroll_track => t.decoration.apply(c.scroll_track_bg, c.scroll_track_bg),
+            .scroll_thumb => t.decoration.apply(c.scroll_thumb_bg, c.scroll_thumb_bg),
+            .browse_dir => t.body.apply(c.browse_dir_fg, c.bg),
+            .playlist_playing => t.selected.apply(c.playlist_playing_fg, c.playlist_playing_bg),
+            .playlist_played => t.body.apply(c.playlist_played_fg, c.bg),
+            .playlist_dead => t.body.apply(c.playlist_dead_fg, c.bg),
+            .playlist_dead_mark => t.body.apply(c.playlist_dead_mark_fg, c.bg),
         };
-    }
-
-    pub fn listEntry(self: Theme, fg: vaxis.Color, background: vaxis.Color, selected: bool) vaxis.Style {
-        const attributes = if (selected) self.typography.selected else self.typography.body;
-        return attributes.apply(fg, background);
     }
 
     pub fn patSeparator(self: Theme, is_cur: bool) vaxis.Style {
@@ -504,7 +583,13 @@ fn gradientColor(stops: []const VuStop, frac: f32) vaxis.Color {
 }
 
 pub const themes = @import("registry.zig").themes;
-pub const default_theme = themes[0];
+pub const default_theme = @import("themes/midnight_azure.zig").theme;
+pub const default_theme_index: usize = blk: {
+    for (themes, 0..) |t, i| {
+        if (std.mem.eql(u8, t.display_name, default_theme.display_name)) break :blk i;
+    }
+    @compileError("default theme is not registered");
+};
 
 // --- tests -------------------------------------------------------------------
 

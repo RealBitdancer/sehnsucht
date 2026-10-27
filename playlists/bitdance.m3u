@@ -1,112 +1,59 @@
 #EXTM3U
 #PLAYLIST:Bitdance
-# Retro game OPL set from Modland (IMF/DRO/HSC/LDS) and the OPL Archive (VGZ covers).
-# IMF #EXTINF rate= tags use the original game tick rates (VGMPF):
-#   560 Hz  Bio Menace, Commander Keen, Monster Bash, Catacomb 3-D
-#   700 Hz  Cosmo's Cosmic Adventure, Wolfenstein 3D, Spear of Destiny, Blake Stone
-#   280 Hz  Duke Nukem II
+# A tour of sehnsucht with one track per supported format. Each entry carries
+# a theme= tag that fits its mood, so one pass shows all three visualizers
+# and all six themes. IMF and AudioT rate= tags use the original game tick
+# rates (VGMPF). AudioT, KSM, ROL, SCI0, and XMI fetch their companion files
+# from the same directory.
 
-#EXTINF:-1 rate=560,Bio Menace - Theme
-https://modland.com/pub/modules/Ad%20Lib/Apogee/Bobby%20Prince/Bio%20Menace/biotheme.imf
-#EXTINF:-1 rate=560,Bio Menace - Rockinit
-https://modland.com/pub/modules/Ad%20Lib/Apogee/Bobby%20Prince/Bio%20Menace/rockinit.imf
-#EXTINF:-1 rate=560,Commander Keen - Too Hot to Handle
-https://modland.com/pub/modules/Ad%20Lib/Apogee/Bobby%20Prince/Commander%20Keen%204-6/toohot.imf
-#EXTINF:-1 rate=560,Commander Keen - Metal
-https://modland.com/pub/modules/Ad%20Lib/Apogee/Bobby%20Prince/Commander%20Keen%204-6/metal.imf
-#EXTINF:-1 rate=560,Commander Keen - Spacfunk
-https://modland.com/pub/modules/Ad%20Lib/Apogee/Bobby%20Prince/Commander%20Keen%204-6/spacfunk.imf
-#EXTINF:-1 rate=700,Cosmo's Cosmic Adventure - Boss
-https://modland.com/pub/modules/Ad%20Lib/Apogee/Bobby%20Prince/Cosmo%27s%20Cosmic%20Adventure/mboss.imf
-#EXTINF:-1 rate=700,Cosmo's Cosmic Adventure - Caves
-https://modland.com/pub/modules/Ad%20Lib/Apogee/Bobby%20Prince/Cosmo%27s%20Cosmic%20Adventure/mcaves.imf
-#EXTINF:-1 rate=700,Wolfenstein 3D - Get Them
-https://modland.com/pub/modules/Ad%20Lib/Apogee/Bobby%20Prince/Wolfenstein%203D/getthem.imf
-#EXTINF:-1 rate=700,Wolfenstein 3D - Searching
-https://modland.com/pub/modules/Ad%20Lib/Apogee/Bobby%20Prince/Wolfenstein%203D/searchn.imf
-#EXTINF:-1 rate=700,Wolfenstein 3D - Wondering About My Loved Ones
-https://modland.com/pub/modules/Ad%20Lib/Apogee/Bobby%20Prince/Wolfenstein%203D/wonderin.imf
-#EXTINF:-1 rate=700,Spear of Destiny - Get You
-https://modland.com/pub/modules/Ad%20Lib/Apogee/Bobby%20Prince/Wolfenstein%203D%20-%20Spear%20Of%20Destiny/xgetyou.imf
-#EXTINF:-1 rate=700,Spear of Destiny - Funkie
-https://modland.com/pub/modules/Ad%20Lib/Apogee/Bobby%20Prince/Wolfenstein%203D%20-%20Spear%20Of%20Destiny/xfunkie.imf
-#EXTINF:-1 rate=700,Blake Stone - Theme
-https://modland.com/pub/modules/Ad%20Lib/Apogee/Bobby%20Prince/Blake%20Stone%20-%20Aliens%20Of%20Gold/theme.imf
-#EXTINF:-1 rate=700,Blake Stone - Jungle
-https://modland.com/pub/modules/Ad%20Lib/Apogee/Bobby%20Prince/Blake%20Stone%20-%20Aliens%20Of%20Gold/junglea.imf
-#EXTINF:-1 rate=280,Duke Nukem II - Theme
-https://modland.com/pub/modules/Ad%20Lib/Apogee/Bobby%20Prince/Duke%20Nukem%202/dukeiia.imf
-#EXTINF:-1 rate=280,Duke Nukem II - Fight
-https://modland.com/pub/modules/Ad%20Lib/Apogee/Bobby%20Prince/Duke%20Nukem%202/fighta.imf
-#EXTINF:-1,Dune - Title (DOSBox DRO)
-https://modland.com/pub/modules/Ad%20Lib/DOSBox/-%20unknown/dune1.dro
-#EXTINF:-1,Doom - At Doom's Gate (E1M1)
-https://opl.wafflenet.com/vgm/Weeppiko/Doom%20-%20At%20Doom's%20Gate%20(E1M1).vgz
-#EXTINF:-1,Doom - Kitchen Ace (And Taking Names) (E1M4)
-https://opl.wafflenet.com/vgm/AmigaX/Doom%20-%20Kitchen%20Ace%20(And%20Taking%20Names)%20(E1M4).vgz
-#EXTINF:-1,Doom - Dark Halls (E1M3)
-https://opl.wafflenet.com/vgm/brickblock369/Doom%20-%20Dark%20Halls%20(E1M3).vgz
-#EXTINF:-1,Doom II - Running From Evil (MAP01)
-https://opl.wafflenet.com/vgm/kvee/Doom%20II%20-%20Running%20From%20Evil%20(MAP01).vgz
-#EXTINF:-1,Streets of Rage 2 - Go Straight
-https://opl.wafflenet.com/vgm/KwaK101/Streets%20of%20Rage%202%20-%20Go%20Straight.vgz
-#EXTINF:-1,Streets of Rage - Fighting in the Street
-https://opl.wafflenet.com/vgm/Louis%20Gorenfeld/Streets%20of%20Rage%20-%20Fighting%20in%20the%20Street.vgz
-#EXTINF:-1,Mega Man X - Storm Eagle
-https://opl.wafflenet.com/vgm/Weeppiko/Mega%20Man%20X%20-%20Storm%20Eagle.vgz
-#EXTINF:-1,Castlevania III - Big Battle 1
-https://opl.wafflenet.com/vgm/Dullstar/Castlevania%20III%20-%20Dracula's%20Curse%20-%20Big%20Battle%201.vgz
-#EXTINF:-1,Snatcher - One Night in Neo Kobe City
+#EXTINF:-1 theme="Midnight Azure",monkey island - title theme
+https://modland.com/pub/modules/Ad%20Lib/LucasArts/Michael%20Land/monkey%20island%20-%20title%20theme.laa
+#EXTINF:-1 theme="Midnight Azure",Dune1
+https://modland.com/pub/modules/Ad%20Lib/DOSBox/_unknown/dune1.dro
+#EXTINF:-1 theme="Midnight Azure",Kyrandia - intro
+https://modland.com/pub/modules/Ad%20Lib/ADL/Frank%20Klepacki/legend%20of%20kyrandia%20-%20intro.adl
+#EXTINF:-1 theme="Midnight Azure",Chris Korte - Crystal 2
+https://modland.com/pub/modules/Ad%20Lib/HSC%20AdLib%20Composer/Chris%20Korte/crystal%202.hsc
+
+#EXTINF:-1 theme="LCD Ink",ken's labyrinth - intro
+https://modland.com/pub/modules/Ad%20Lib/Ken's%20AdLib%20Music/Ken%20Silverman/ken%27s%20labyrinth%20-%20intro.ksm
+#EXTINF:-1 theme="LCD Ink",Purple Motion - Playmus1
+https://modland.com/pub/modules/Ad%20Lib/SNG%20Player/Purple%20Motion/playmus1.sng
+#EXTINF:-1 theme="LCD Ink",Miles AIL demo (Couple Days Off, Row Row Row Your Boat, An Die Freude)
+https://raw.githubusercontent.com/mattseabrook/XMI2MID/main/Reference/AIL2/DEMO.XMI
+#EXTINF:-1 theme="LCD Ink",Fantasy1
+https://modland.com/pub/modules/Ad%20Lib/Extra%20Simple%20Music/_unknown/fantasy1.xsm
+
+#EXTINF:-1 theme="High Contrast",Toreador
+https://modland.com/pub/modules/Ad%20Lib/Visual%20Composer/_unknown/toreador.rol
+#EXTINF:-1 theme="High Contrast",God of Thunder - Open (story)
+https://discmaster.textfiles.com/file/691/FUNGAMES1.cdr/fungames/got/gotres.dat/OPENSONG
+#EXTINF:-1 theme="High Contrast",Ride of the Valkyries
+https://modland.com/pub/modules/Ad%20Lib/Bob's%20AdLib%20Music/_unknown/rvalkyry.bam
+#EXTINF:-1 theme="High Contrast",Conquest of Camelot - Theme
+https://modland.com/pub/modules/Ad%20Lib/Sierra/Mark%20Seibert/Conquest%20Of%20Camelot/cc1%20theme.sci
+
+#EXTINF:-1 theme="Cyberpunk",Brendan Bailey - Race Through Cyberspace (Revised Edition)
+https://modland.com/pub/modules/Ad%20Lib/AdLib%20Tracker%202/Brendan%20Bailey/race%20through%20cyberspace%20%28revised%20edition%29.a2m
+#EXTINF:-1 theme="Cyberpunk",bahamute - Snatcher - One Night in Neo Kobe City
 https://opl.wafflenet.com/vgm/bahamute/Snatcher%20-%20One%20Night%20in%20Neo%20Kobe%20City.vgz
-#EXTINF:-1,Snatcher - Twilight of Neo Kobe City
-https://opl.wafflenet.com/vgm/KONAMI/Snatcher%20-%20Twilight%20of%20Neo%20Kobe%20City.vgz
-#EXTINF:-1,Salamander - Power of Anger
-https://opl.wafflenet.com/vgm/KONAMI/Salamander%20-%20Power%20of%20Anger.vgz
-#EXTINF:-1,Super Street Fighter 2 - Cammy Stage
-https://opl.wafflenet.com/vgm/Aspar/Super%20Street%20Fighter%202%20-%20Cammy%20Stage.vgz
-#EXTINF:-1,Sonic the Hedgehog - Green Hill Zone
-https://opl.wafflenet.com/vgm/Benjamin%20Gerardin/Sonic%20the%20Hedgehog%20-%20Green%20Hill%20Zone.vgz
-#EXTINF:-1,Hi-Fly
-https://opl.wafflenet.com/vgm/%24pleen/Hi-Fly.vgz
-#EXTINF:-1,intro - titlemusic
-https://modland.com/pub/modules/Ad%20Lib/HSC%20AdLib%20Composer/Hannes%20Seifert/Burntime/intro%20-%20titlemusic.hsc
-#EXTINF:-1,neo title remix
-https://modland.com/pub/modules/Ad%20Lib/HSC%20AdLib%20Composer/Hannes%20Seifert/neo%20title%20remix.hsc
-#EXTINF:-1,Tyrian - One Mustn't Fall
+#EXTINF:-1 theme="Cyberpunk",Johannes Bjerregaard - DDD
+https://modland.com/pub/modules/Ad%20Lib/Johannes%20Bjerregard%20Module/Johannes%20Bjerregard/ddd.jbm
+#EXTINF:-1 rate=700 theme="Cyberpunk",Blake Stone - Theme
+https://modland.com/pub/modules/Ad%20Lib/Apogee/Bobby%20Prince/Blake%20Stone%20-%20Aliens%20Of%20Gold/theme.imf
+
+#EXTINF:-1 theme="Neo Tokyo",tyrian35 - one mustn't fall
 https://modland.com/pub/modules/Ad%20Lib/Loudness%20Sound%20System/Andreas%20Molnar/tyrian35%20-%20one%20mustn%27t%20fall.lds
-#EXTINF:-1,Tyrian - Sahra's Song
-https://modland.com/pub/modules/Ad%20Lib/Loudness%20Sound%20System/Andreas%20Molnar/tyrian36%20-%20sahra%27s%20song.lds
-#EXTINF:-1,Attack the Enemy's Heart
-https://opl.wafflenet.com/vgm/Ahn1979/Attack%20the%20Enemy's%20Heart.vgz
-#EXTINF:-1,Final Fantasy V - Clash on the Big Bridge
-https://opl.wafflenet.com/vgm/Aspar/Final%20Fantasy%20V%20-%20Clash%20on%20the%20Big%20Bridge.vgz
-#EXTINF:-1,ByteTune
-https://opl.wafflenet.com/vgm/Bird/ByteTune.vgz
-#EXTINF:-1,Sonic the Hedgehog 3 & Knuckles - Flying Battery Zone Act 1
-https://opl.wafflenet.com/vgm/BlastlessAnthony/Sonic%20the%20Hedgehog%203%20%26%20Knuckles%20-%20Flying%20Battery%20Zone%20Act%201.vgz
-#EXTINF:-1,A Different Kind of Hero
-https://opl.wafflenet.com/vgm/Brendan%20Bailey/A%20Different%20Kind%20of%20Hero.vgz
-#EXTINF:-1,Lemmings - Lemming 2
-https://opl.wafflenet.com/vgm/Brendan%20Bailey/Lemmings%20-%20Lemming%202.vgz
-#EXTINF:-1,THEE Chiptune
-https://opl.wafflenet.com/vgm/Brendan%20Bailey/THEE%20Chiptune.vgz
-#EXTINF:-1,Zak00
-https://opl.wafflenet.com/vgm/Dalezy/Deathlord%20-%20Zak00.vgz
-#EXTINF:-1,Motivation BBStro
-https://opl.wafflenet.com/vgm/Dalezy/Motivation%20BBStro.vgz
-#EXTINF:-1,Doom - Donna to the Rescue (E3M2)
-https://opl.wafflenet.com/vgm/EpicTyphlosion/Doom%20-%20Donna%20to%20the%20Rescue%20(E3M2).vgz
-#EXTINF:-1,Famicommodore
-https://opl.wafflenet.com/vgm/FADE/DoricDream%20-%20Famicommodore.vgz
-#EXTINF:-1,Still Remember Rob
-https://opl.wafflenet.com/vgm/Hannes%20Seifert/Still%20Remember%20Rob.vgz
-#EXTINF:-1,Crystal Intro
-https://opl.wafflenet.com/vgm/Hydra/TDK%20-%20Crystal%20Intro.vgz
-#EXTINF:-1,Get Ready for This
-https://opl.wafflenet.com/vgm/Unknown/2%20Unlimited%20-%20Get%20Ready%20for%20This.vgz
-#EXTINF:-1,Intro Coop Tune
-https://opl.wafflenet.com/vgm/subz3ro/Hydra%20%26%20NHP%20-%20Intro%20Coop%20Tune.vgz
-#EXTINF:-1,FAT 9
-https://opl.wafflenet.com/vgm/SexyElf/FAT%209.vgz
-#EXTINF:-1,Smells Like Teen Spirit
-https://opl.wafflenet.com/vgm/Rebible/Nirvana%20-%20Smells%20Like%20Teen%20Spirit.vgz
+#EXTINF:-1 theme="Neo Tokyo",Silky's - Escape
+https://adplug.github.io/library/files/MusicV.zip/ESCAPE.WM
+#EXTINF:-1 theme="Neo Tokyo",Void (AU) - Alloyrun
+https://modland.com/pub/modules/Ad%20Lib/Reality%20AdLib%20Tracker/Void%20%28AU%29/alloyrun.rad
+#EXTINF:-1 theme="Neo Tokyo",In The Air Tonight
+https://modland.com/pub/modules/Ad%20Lib/Creative%20Music%20File/_unknown/in%20the%20air%20tonight.cmf
+
+#EXTINF:-1 rate=700 theme="Tron Ares",Wolfenstein 3D
+https://archive.org/download/jpb1991/wolf3dendgamedos.zip/wolf3dendgamedos/AUDIOT.WL6
+#EXTINF:-1 theme="Tron Ares",monkey island 2 - lechuck's fortress shipping room
+https://modland.com/pub/modules/Ad%20Lib/LucasArts/Michael%20Land/coop-Peter%20McConnell/monkey%20island%202%20-%20lechuck%27s%20fortress%20shipping%20room.laa
+#EXTINF:-1 theme="Tron Ares",Aubrey Hodges - Quest For Glory 4 - Battle
+https://modland.com/pub/modules/Ad%20Lib/Raw%20OPL%20Capture/Aubrey%20Hodges/quest%20for%20glory%204%20-%20battle.raw

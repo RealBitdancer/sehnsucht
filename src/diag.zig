@@ -27,7 +27,7 @@ fn onPanic(msg: []const u8, ret_addr: ?usize) noreturn {
 fn writeCrash(comptime f: []const u8, args: anytype) void {
     const io = log_io orelse return;
     var line_buf: [1024]u8 = undefined;
-    const line = std.fmt.bufPrint(&line_buf, f, args) catch return;
+    const line = std.mem.print(&line_buf, f, args) catch return;
     const file = Io.Dir.cwd().createFile(io, crash_log, .{ .truncate = false }) catch return;
     defer file.close(io);
     const off = file.length(io) catch 0;

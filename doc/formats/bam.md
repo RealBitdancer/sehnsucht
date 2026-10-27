@@ -42,17 +42,17 @@ consumes their operands and ignores the action.
 | Byte | Data | Meaning |
 |------|------|---------|
 | `0x00` | none | Stop. End of file is also a stop. |
-| `0x01`–`0x0F` | none | Reserved. sehnsucht rejects the file. |
-| `0x10`–`0x1F` | 1 frequency | Start note on voice `byte - 0x10`. Frequency is an index 0-127 into the table below. |
-| `0x20`–`0x2F` | none | Stop note on voice `byte - 0x20`. |
-| `0x30`–`0x3F` | 11 SBI bytes | Assign an instrument to voice `byte - 0x30`. |
-| `0x40`–`0x4F` | none | Reserved. sehnsucht rejects the file. |
-| `0x50`–`0x5F` | none | Set label `byte - 0x50` to the next command. |
-| `0x60`–`0x6F` | 1 kind | Jump to label `byte - 0x60`. See [Jumps](#jumps). |
+| `0x01` through `0x0F` | none | Reserved. sehnsucht rejects the file. |
+| `0x10` through `0x1F` | 1 frequency | Start note on voice `byte - 0x10`. Frequency is an index 0-127 into the table below. |
+| `0x20` through `0x2F` | none | Stop note on voice `byte - 0x20`. |
+| `0x30` through `0x3F` | 11 SBI bytes | Assign an instrument to voice `byte - 0x30`. |
+| `0x40` through `0x4F` | none | Reserved. sehnsucht rejects the file. |
+| `0x50` through `0x5F` | none | Set label `byte - 0x50` to the next command. |
+| `0x60` through `0x6F` | 1 kind | Jump to label `byte - 0x60`. See [Jumps](#jumps). |
 | `0x70` | none | End of chorus (return from a `0xFF` jump). |
-| `0x71`–`0x7E` | none | Reserved. sehnsucht rejects the file. |
+| `0x71` through `0x7E` | none | Reserved. sehnsucht rejects the file. |
 | `0x7F` | none | Zero-length delay. Published files use this as a no-op (notably `rvalkyry.bam`). |
-| `0x80`–`0xFF` | none | Wait `byte - 127` ticks. `0x9F` (159) is one whole note (32 ticks). |
+| `0x80` through `0xFF` | none | Wait `byte - 127` ticks. `0x9F` (159) is one whole note (32 ticks). |
 
 ### Instrument bytes
 
@@ -119,7 +119,7 @@ The kind byte after a jump command is:
 | Kind | Meaning |
 |-----:|---------|
 | `0` | Leave the jump. Used as an explicit end-of-loop marker. |
-| `1`–`253` | Finite loop. The first visit stores `kind - 1` remaining jumps on the label. Later visits decrement that counter until it is already 0, then the jump is skipped and the counter is cleared so the next pass starts fresh. |
+| `1` through `253` | Finite loop. The first visit stores `kind - 1` remaining jumps on the label. Later visits decrement that counter until it is already 0, then the jump is skipped and the counter is cleared so the next pass starts fresh. |
 | `254` | Infinite loop. Jump to the label, drop any open chorus return, and report a song boundary (`done`). The next `step` continues from the target. |
 | `255` | Chorus (one level). Save the return address, jump to the label, and resume at `0x70`. A chorus while already in a chorus is ignored. `0x70` outside a chorus is ignored. |
 
@@ -149,12 +149,24 @@ boundary, so finite loops and choruses are counted exactly.
 
 ## Playback
 
-BAM uses the stream visualizer and OPL2 only. Rhythm mode is never enabled.
+BAM uses the sequence visualizer and OPL2 only. Rhythm mode is never enabled.
+The pane follows an indexed command list with file offsets, voice numbers,
+notes, waits, labels, calls, returns, and repeat counts. The playhead identifies
+a command index rather than an elapsed tick. Each published event carries its
+score tick, the sum of the waits before it, so the piano roll and the inspector
+can place it in time. Loops do not advance the score tick. Identical inline SBI patches
+share an instrument-bank entry. The inspector exposes their operator data and
+the complete event list. Live notes and measured levels appear above the list.
+FLOW lists the song's structure instead of its waits: labels, jumps with their
+repeat counts, chorus calls and returns, the song loop, and the stop, each with
+its command index. Label 0 is the song start until the file sets it, so FLOW
+shows it at index 0 when no explicit label 0 begins the stream. The section
+being played is highlighted.
 
 Start note writes `A0` and `B0` for that voice (`B0` includes key-on) and
 remembers the block/F-number high byte. Stop note writes that stored `B0`
-with key-on clear. It does not write `B0 = 0`, which would slam the pitch
-to octave 0 while the release is still audible. Voices 9-15 are ignored
+with key-on clear. This preserves pitch during the release envelope.
+Voices 9-15 are ignored
 after their operands are consumed.
 
 A stop command or end of file rewinds labels, chorus state, and the cursor to
@@ -170,20 +182,3 @@ its extension.
 
 Paths without `.bam` are not claimed. Wrong magic declines the file. A valid
 magic with a reserved command or a truncated operand returns `error.InvalidBam`.
-
-## Compatibility notes
-
-* Bioinformatics BAM files share the extension and are declined by the `CBMF`
-  check.
-* Command `0x7F` is reserved in a strict reading of the spec. The authors
-  documented it as a zero-length delay so existing songs play. sehnsucht does
-  that.
-* AdPlug hangs on a jump to a label that has not been set. sehnsucht skips it.
-* AdPlug writes `B0 = 0` on stop-note. The original BAM kit (`Fm.asm` `KeyOff`,
-  and `fmsynth.e` `fm_voice_off`) writes the previous block/F-number with
-  key-on clear. sehnsucht follows the kit. Writing zero produces a click on
-  every note-off (very audible on `arab.bam`).
-* Finite-loop visit counts match AdPlug: a kind of `N` jumps `N` extra times
-  after the first pass through the labelled section.
-* sehnsucht does not implement AdPlug's same-label nested-loop clobber as a
-  feature. It is a consequence of storing the counter on the label.

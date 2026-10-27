@@ -10,6 +10,7 @@ const paint = @import("paint.zig");
 const format = @import("format.zig");
 const remote = @import("remote.zig");
 const Theme = @import("theme.zig").Theme;
+const themes = @import("theme.zig").themes;
 
 pub const extensions = [_][]const u8{ ".m3u", ".m3u8" };
 
@@ -60,12 +61,14 @@ pub const Parsed = struct {
     entries: []const []const u8,
     titles: []const ?[]const u8,
     rates: []const u32,
+    themes: []const ?u8,
     name: ?[]const u8,
 };
 
 const Extinf = struct {
     title: ?[]const u8 = null,
     rate: u32 = 0,
+    theme: ?u8 = null,
 };
 
 fn parseExtinf(line: []const u8) Extinf {
@@ -80,6 +83,7 @@ fn parseExtinf(line: []const u8) Extinf {
     return .{
         .title = if (title.len == 0) null else title,
         .rate = extinfRate(rest[0..comma]),
+        .theme = extinfTheme(rest[0..comma]),
     };
 }
 
@@ -94,9 +98,26 @@ fn extinfRate(attrs: []const u8) u32 {
         } else val.len;
         if (end == 0) continue;
         const hz = std.fmt.parseInt(u32, val[0..end], 10) catch continue;
-        if (std.mem.indexOfScalar(u32, &format.tick_rates, hz) != null) return hz;
+        if (std.mem.findScalar(u32, &format.tick_rates, hz) != null) return hz;
     }
     return 0;
+}
+
+fn extinfTheme(attrs: []const u8) ?u8 {
+    var i: usize = 0;
+    while (i + 6 <= attrs.len) : (i += 1) {
+        if (!std.ascii.eqlIgnoreCase(attrs[i .. i + 6], "theme=")) continue;
+        if (i > 0 and !std.ascii.isWhitespace(attrs[i - 1])) continue;
+        const val = attrs[i + 6 ..];
+        const name = if (val.len > 0 and val[0] == '"')
+            val[1 .. 1 + (std.mem.findScalar(u8, val[1..], '"') orelse continue)]
+        else
+            val[0 .. std.mem.findAny(u8, val, " \t") orelse val.len];
+        for (themes, 0..) |t, k| {
+            if (std.ascii.eqlIgnoreCase(t.display_name, name)) return @intCast(k);
+        }
+    }
+    return null;
 }
 
 fn playlistName(line: []const u8) ?[]const u8 {
@@ -111,12 +132,13 @@ fn playlistName(line: []const u8) ?[]const u8 {
 const Pending = struct {
     title: ?[]const u8 = null,
     rate: u32 = 0,
+    theme: ?u8 = null,
 
     fn replace(self: *Pending, gpa: std.mem.Allocator, extinf: Extinf) !void {
         const copy = if (extinf.title) |t| try gpa.dupe(u8, t) else null;
         if (copy) |c| scrubControlBytes(c);
         self.clear(gpa);
-        self.* = .{ .title = copy, .rate = extinf.rate };
+        self.* = .{ .title = copy, .rate = extinf.rate, .theme = extinf.theme };
     }
 
     fn clear(self: *Pending, gpa: std.mem.Allocator) void {
@@ -146,6 +168,8 @@ pub fn parse(
     }
     var rates: std.ArrayList(u32) = .empty;
     errdefer rates.deinit(gpa);
+    var entry_themes: std.ArrayList(?u8) = .empty;
+    errdefer entry_themes.deinit(gpa);
     var pending: Pending = .{};
     defer pending.clear(gpa);
     var list_name: ?[]const u8 = null;
@@ -192,6 +216,7 @@ pub fn parse(
         try titles.append(gpa, pending.title);
         pending.title = null;
         try rates.append(gpa, pending.rate);
+        try entry_themes.append(gpa, pending.theme);
         pending.rate = 0;
     }
     const out_entries = try entries.toOwnedSlice(gpa);
@@ -205,7 +230,9 @@ pub fn parse(
         gpa.free(out_titles);
     }
     const out_rates = try rates.toOwnedSlice(gpa);
-    return .{ .entries = out_entries, .titles = out_titles, .rates = out_rates, .name = list_name };
+    errdefer gpa.free(out_rates);
+    const out_themes = try entry_themes.toOwnedSlice(gpa);
+    return .{ .entries = out_entries, .titles = out_titles, .rates = out_rates, .themes = out_themes, .name = list_name };
 }
 
 fn isPlayableEntry(entry: []const u8) bool {
@@ -219,6 +246,7 @@ pub fn free(gpa: std.mem.Allocator, parsed: Parsed) void {
     for (parsed.titles) |t| if (t) |s| gpa.free(s);
     gpa.free(parsed.titles);
     gpa.free(parsed.rates);
+    gpa.free(parsed.themes);
     if (parsed.name) |s| gpa.free(s);
 }
 
@@ -243,6 +271,7 @@ pub const ListState = struct {
         unplayable: []const bool,
         playing_index: ?usize,
     ) void {
+        self.nav.key_hits = .{};
         const n = entries.len;
         const header_rows: u16 = 3;
         const with_bar = win.height >= header_rows + paint.key_bar_height + 1;
@@ -254,7 +283,7 @@ pub const ListState = struct {
             const x = (win.width -| @as(u16, @intCast(msg.len))) / 2;
             const y = (win.height -| bar_h) / 2;
             paint.printAt(win, x, y, msg, theme.style(.playlist_empty));
-            if (with_bar) drawKeyBar(win, theme, 0, 0, false);
+            if (with_bar) drawKeyBar(win, theme, 0, 0, false, &self.nav.key_hits);
             return;
         }
 
@@ -269,13 +298,13 @@ pub const ListState = struct {
 
         const plural: []const u8 = if (n == 1) "" else "s";
         const title = if (list_name.len > 0)
-            std.fmt.allocPrint(arena, "{s} · {d} track{s}", .{
+            arena.print("{s} · {d} track{s}", .{
                 list_name,
                 n,
                 plural,
             }) catch list_name
         else
-            std.fmt.allocPrint(arena, "{d} track{s}", .{ n, plural }) catch "tracks";
+            arena.print("{d} track{s}", .{ n, plural }) catch "tracks";
         paint.printFit(win, 1, 0, title, win.width -| 2, theme.style(.playlist_title));
 
         const show_sb = n > list_h;
@@ -300,11 +329,6 @@ pub const ListState = struct {
         if (fmt_x + 6 <= row_w) paint.printAt(win, fmt_x, 1, "Format", col_style);
         paint.drawRule(win, theme, 2, row_w);
 
-        const focus_bg = theme.colors.list_cursor_bg;
-        const focus_fg = theme.colors.list_cursor_fg;
-        const open_bg = theme.colors.playlist_playing_bg;
-        const open_fg = theme.colors.playlist_playing_fg;
-
         var row: u16 = 0;
         while (row < list_h) : (row += 1) {
             const idx = first + row;
@@ -314,62 +338,58 @@ pub const ListState = struct {
             const is_playing = if (playing) |p| idx == p else false;
             const is_unplayable = idx < unplayable.len and unplayable[idx];
 
-            const bg = if (is_cursor) focus_bg else if (is_playing) open_bg else theme.colors.bg;
-            const fg = if (is_cursor) focus_fg else if (is_playing) open_fg else theme.colors.list_row_fg;
-            const style = theme.listEntry(fg, bg, is_cursor or is_playing);
-            const row_style: vaxis.Style = if (is_unplayable and !(is_cursor or is_playing))
-                theme.listEntry(theme.colors.playlist_dead_fg, bg, false)
+            const style = if (is_cursor)
+                theme.style(.list_cursor)
+            else if (is_playing)
+                theme.style(.playlist_playing)
+            else if (is_unplayable)
+                theme.style(.playlist_dead)
             else
-                style;
+                theme.style(.list_row);
 
-            paint.fillRowBg(win, y, 0, row_w, bg);
+            paint.fillRowBg(win, y, 0, row_w, style.bg);
 
             const marker: []const u8 = if (is_playing) "▶" else if (is_unplayable) "✗" else " ";
-            const marker_style: vaxis.Style = if (is_unplayable and !is_cursor)
-                theme.listEntry(theme.colors.playlist_dead_mark_fg, bg, false)
-            else
-                style;
+            var marker_style = style;
+            if (is_unplayable and !is_cursor) marker_style.fg = theme.style(.playlist_dead_mark).fg;
             paint.printAt(win, 0, y, marker, marker_style);
 
             const is_played = idx < played.len and played[idx];
-            const num_style: vaxis.Style = if (is_cursor or is_playing)
-                style
-            else if (is_unplayable)
-                row_style
-            else if (is_played)
-                .{ .fg = theme.colors.playlist_played_fg, .bg = bg }
+            const num_style: vaxis.Style = if (is_played and !is_cursor and !is_playing and !is_unplayable)
+                theme.style(.playlist_played)
             else
                 style;
-            const num = std.fmt.allocPrint(arena, "{d: >3}", .{idx + 1}) catch continue;
+            const num = arena.print("{d: >3}", .{idx + 1}) catch continue;
             paint.printAt(win, marker_w, y, num, num_style);
 
             if (title_w > 0) {
                 const curated: ?[]const u8 = if (idx < titles.len) titles[idx] else null;
                 const name = curated orelse remote.displayBasename(arena, entries[idx]);
-                paint.printFit(win, title_x, y, name, title_w, row_style);
+                paint.printFit(win, title_x, y, name, title_w, style);
             }
 
             if (fmt_x < row_w) {
                 const fmt_label = formatLabel(arena, entries[idx]);
-                paint.printFit(win, fmt_x, y, fmt_label, row_w -| fmt_x, row_style);
+                paint.printFit(win, fmt_x, y, fmt_label, row_w -| fmt_x, style);
             }
         }
 
         if (show_sb) paint.drawScrollbar(win, theme, header_rows, list_h, n, first);
         const cursor_unplayable = cursor < unplayable.len and unplayable[cursor];
-        if (with_bar) drawKeyBar(win, theme, n, cursor, cursor_unplayable);
+        if (with_bar) drawKeyBar(win, theme, n, cursor, cursor_unplayable, &self.nav.key_hits);
     }
 };
 
-fn drawKeyBar(win: vaxis.Window, theme: Theme, count: usize, cursor: usize, cursor_unplayable: bool) void {
+fn drawKeyBar(win: vaxis.Window, theme: Theme, count: usize, cursor: usize, cursor_unplayable: bool, hits: *paint.HotkeyHits) void {
     const hints = paint.listNavigationHints(count, cursor) ++ [_]paint.Hotkey{
         .{
             .key = "Enter",
+            .codepoint = vaxis.Key.enter,
             .label = if (cursor_unplayable) "retry" else "play",
             .enabled = count > 0,
         },
     };
-    paint.drawListKeyBar(win, theme, &hints);
+    paint.drawListKeyBar(win, theme, &hints, hits);
 }
 
 fn formatLabel(arena: std.mem.Allocator, path: []const u8) []const u8 {
@@ -391,6 +411,7 @@ test "format column labels come from the owning format" {
     try std.testing.expectEqualStrings("AudioT", formatLabel(arena, "AUDIO.WL6"));
     try std.testing.expectEqualStrings("AudioT", formatLabel(arena, "AUDIOHED.SOD"));
     try std.testing.expectEqualStrings("HSC", formatLabel(arena, "http://x/tune.hsc"));
+    try std.testing.expectEqualStrings("HSP", formatLabel(arena, "http://x/tune.hsp"));
     try std.testing.expectEqualStrings("RAD", formatLabel(arena, "song.rad"));
     try std.testing.expectEqualStrings("LDS", formatLabel(arena, "song.lds"));
     try std.testing.expectEqualStrings("LD0", formatLabel(arena, "old.ld0"));
@@ -402,6 +423,7 @@ test "format column labels come from the owning format" {
     try std.testing.expectEqualStrings("VGZ", formatLabel(arena, "a.vgz"));
     try std.testing.expectEqualStrings("DRO", formatLabel(arena, "cap.dro"));
     try std.testing.expectEqualStrings("RAW", formatLabel(arena, "cap.raw"));
+    try std.testing.expectEqualStrings("RAC", formatLabel(arena, "cap.rac"));
     try std.testing.expectEqualStrings("BAM", formatLabel(arena, "tune.bam"));
     try std.testing.expectEqualStrings("XSM", formatLabel(arena, "tune.xsm"));
     try std.testing.expectEqualStrings("CMF", formatLabel(arena, "tune.cmf"));
@@ -410,6 +432,32 @@ test "format column labels come from the owning format" {
     try std.testing.expectEqualStrings("ADLIB", formatLabel(arena, "menu.adlib"));
     try std.testing.expectEqualStrings("TXT", formatLabel(arena, "stray.txt"));
     try std.testing.expectEqualStrings("?", formatLabel(arena, "noext"));
+}
+
+test "an unplayable playing row keeps its highlight under the marker" {
+    const gpa = std.testing.allocator;
+    var screen = try vaxis.Screen.init(gpa, .{ .rows = 9, .cols = 40, .x_pixel = 0, .y_pixel = 0 });
+    defer screen.deinit(gpa);
+    screen.width_method = .unicode;
+    const win = vaxis.Window{ .x_off = 0, .y_off = 0, .parent_x_off = 0, .parent_y_off = 0, .width = 40, .height = 9, .screen = &screen };
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const theme = @import("theme.zig").default_theme;
+
+    const entries = [_][]const u8{ "a.imf", "b.imf", "c.imf" };
+    const unplayable = [_]bool{ false, true, true };
+    var list: ListState = .{};
+    list.draw(win, theme, arena_state.allocator(), "", &entries, &.{}, &.{}, &unplayable, 1);
+
+    const playing = screen.readCell(0, 4).?;
+    try std.testing.expectEqualStrings("▶", playing.char.grapheme);
+    try std.testing.expectEqual(theme.colors.playlist_playing_bg, playing.style.bg);
+    try std.testing.expectEqual(theme.colors.playlist_dead_mark_fg, playing.style.fg);
+    try std.testing.expectEqual(theme.colors.playlist_playing_bg, screen.readCell(1, 4).?.style.bg);
+
+    const dead = screen.readCell(0, 5).?;
+    try std.testing.expectEqualStrings("✗", dead.char.grapheme);
+    try std.testing.expectEqual(theme.style(.playlist_dead_mark), dead.style);
 }
 
 fn parseOomBody(gpa: std.mem.Allocator) !void {
@@ -503,6 +551,39 @@ test "parseExtinf splits title and rate in one pass" {
     try std.testing.expectEqual(@as(u32, 0), parseExtinf("#EXTINF:-1,No Rate").rate);
     try std.testing.expectEqual(@as(u32, 0), parseExtinf("#EXTINF:-1 rate=44100,Bad").rate);
     try std.testing.expectEqual(@as(u32, 0), parseExtinf("#EXTINF:-1 bitrate=700,Not Rate").rate);
+}
+
+test "theme= names a registered theme, quoted or bare, in any case" {
+    const neo = for (themes, 0..) |t, k| {
+        if (std.mem.eql(u8, t.display_name, "Neo Tokyo")) break @as(u8, @intCast(k));
+    } else unreachable;
+    const tron = for (themes, 0..) |t, k| {
+        if (std.mem.eql(u8, t.display_name, "Tron Ares")) break @as(u8, @intCast(k));
+    } else unreachable;
+    try std.testing.expectEqual(@as(?u8, neo), parseExtinf("#EXTINF:-1 theme=\"Neo Tokyo\",Akira").theme);
+    try std.testing.expectEqual(@as(?u8, tron), parseExtinf("#EXTINF:-1 rate=700 theme=\"tron ares\",Wolf").theme);
+    try std.testing.expectEqual(@as(u32, 700), parseExtinf("#EXTINF:-1 rate=700 theme=\"tron ares\",Wolf").rate);
+    try std.testing.expectEqual(@as(?u8, null), parseExtinf("#EXTINF:-1 theme=\"No Such Theme\",X").theme);
+    try std.testing.expectEqual(@as(?u8, null), parseExtinf("#EXTINF:-1 colortheme=\"Neo Tokyo\",X").theme);
+    try std.testing.expectEqual(@as(?u8, null), parseExtinf("#EXTINF:-1,Plain").theme);
+    try std.testing.expectEqualStrings("Akira", parseExtinf("#EXTINF:-1 theme=\"Neo Tokyo\",Akira").title.?);
+}
+
+test "parse keeps theme= aligned with entries" {
+    const gpa = std.testing.allocator;
+    const text =
+        \\#EXTINF:-1 theme="Midnight Azure",Calm
+        \\a.imf
+        \\#EXTINF:-1,Plain
+        \\b.vgm
+        \\
+    ;
+    const parsed = try parse(gpa, "x.m3u", text);
+    defer free(gpa, parsed);
+    try std.testing.expectEqual(@as(usize, 2), parsed.themes.len);
+    try std.testing.expect(parsed.themes[0] != null);
+    try std.testing.expectEqualStrings("Midnight Azure", themes[parsed.themes[0].?].display_name);
+    try std.testing.expectEqual(@as(?u8, null), parsed.themes[1]);
 }
 
 test "parse keeps rate= aligned with entries" {

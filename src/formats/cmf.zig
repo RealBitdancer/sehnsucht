@@ -6,10 +6,15 @@
 const std = @import("std");
 const opal = @import("opal");
 
+const cp437 = @import("../cp437.zig");
 const fmt = @import("../format.zig");
+const view = @import("../view.zig");
 const chip_adapter = @import("../chip.zig");
 
-pub const visualizer_name = "stream";
+pub const format_name = "CMF";
+pub const extensions = &.{".cmf"};
+pub const visualizer_name = "sequence";
+pub const view_caps = view.ViewCaps{ .sequence = true, .instruments = true };
 
 const magic = "CTMF";
 const instrument_bytes = 16;
@@ -137,6 +142,8 @@ const default_drum_patches = [_][payload_bytes]u8{
     .{ 0x0e, 0x0e, 0x00, 0x00, 0xf8, 0xf8, 0x07, 0x07, 0x03, 0x03, 0x00 },
 };
 
+const drum_names = [default_drum_patches.len][]const u8{ "GM bass drum", "GM snare", "GM tom", "GM cymbal", "GM hi-hat" };
+
 const default_patches = [_][payload_bytes]u8{
     .{ 0x21, 0x21, 0xd1, 0x07, 0xa3, 0xa4, 0x46, 0x25, 0x00, 0x00, 0x0a },
     .{ 0x22, 0x22, 0x0f, 0x0f, 0xf6, 0xf6, 0x95, 0x36, 0x00, 0x00, 0x0a },
@@ -199,8 +206,11 @@ const MidiChannel = struct {
 
 const OplVoice = struct {
     note_start: u32 = 0,
+    velocity: u8 = 0,
+    program: u16 = 0,
     midi_note: i16 = -1,
     midi_channel: i16 = -1,
+    shown_channel: i16 = -1,
 };
 
 const Header = struct {
@@ -231,8 +241,16 @@ const CmfSource = struct {
     regs: [256]u8 = @splat(0),
     midi: [midi_channels]MidiChannel = @splat(.{}),
     voices: [opl_channels]OplVoice = @splat(.{}),
+    drums: [5]OplVoice = @splat(.{}),
     note_playing: [midi_channels]u8 = @splat(255),
     note_fix: [midi_channels]bool = @splat(false),
+    tick: u32 = 0,
+    last_instrument: u16 = 0,
+    gm_drum_program: u16 = view.instrument_none,
+    pending_wait: u32 = 0,
+    events: []view.SequenceEvent = &.{},
+    length_ticks: u32 = 0,
+    channels_in_use: [midi_channels]u8 = @splat(0),
 
     fn write(self: *CmfSource, chip: fmt.Chip, reg: u16, val: u8) void {
         chip.writeReg(reg, val);
@@ -256,6 +274,11 @@ const CmfSource = struct {
         if (self.instruments.len == 0) return Instrument.fromPayload(&default_patches[0]);
         const idx = patch % self.inst_count;
         return self.instruments[idx];
+    }
+
+    fn programOf(self: *const CmfSource, ch: u8) u16 {
+        const drum = self.midi[ch].drum;
+        return if (drum < default_drum_patches.len) self.inst_count + drum else self.midi[ch].patch;
     }
 
     fn channelInstrument(self: *const CmfSource, ch: u8) Instrument {
@@ -383,6 +406,10 @@ const CmfSource = struct {
             self.voices[opl].note_start = self.note_count;
             self.voices[opl].midi_channel = ch;
             self.voices[opl].midi_note = note;
+            const program = self.programOf(ch);
+            self.drums[ch - 11] = .{ .note_start = self.note_count, .midi_channel = channel, .midi_note = note, .velocity = velocity, .program = program };
+            self.last_instrument = program;
+            if (self.midi_drums and channel == 9) self.gm_drum_program = program;
             return;
         }
 
@@ -393,7 +420,11 @@ const CmfSource = struct {
         self.note_count += 1;
         self.voices[voice].note_start = self.note_count;
         self.voices[voice].midi_channel = ch;
+        self.voices[voice].shown_channel = ch;
         self.voices[voice].midi_note = note;
+        self.voices[voice].velocity = velocity;
+        self.voices[voice].program = self.midi[ch].patch;
+        self.last_instrument = self.midi[ch].patch;
 
         const ins = self.instrument(self.midi[ch].patch);
         const level = velocityLevel(ins.carrier.scaling, velocity);
@@ -423,10 +454,11 @@ const CmfSource = struct {
 
         if (ch > 10 and self.percussive) {
             const opl = percChannel(ch);
-            if (self.voices[opl].midi_note != note) return;
+            if (self.drums[ch - 11].midi_note != note) return;
             const bit: u8 = @as(u8, 1) << @intCast(15 - ch);
             self.write(chip, Reg.rhythm, self.regs[Reg.rhythm] & ~bit);
             self.voices[opl].note_start = 0;
+            self.drums[ch - 11].note_start = 0;
             return;
         }
 
@@ -463,6 +495,7 @@ const CmfSource = struct {
             const reg = Reg.key_block + @as(u16, @intCast(i));
             self.write(chip, reg, self.regs[reg] & ~Reg.key_on);
         }
+        self.drums = @splat(.{});
         self.percussive = enable;
         self.write(chip, Reg.csw, 0);
         for (0..opl_channels) |i| {
@@ -489,6 +522,8 @@ const CmfSource = struct {
         self.rhythmMode(chip, self.midi_drums);
         self.note_playing = @splat(255);
         self.note_fix = @splat(false);
+        self.last_instrument = 0;
+        self.gm_drum_program = view.instrument_none;
     }
 
     fn readByte(self: *CmfSource) ?u8 {
@@ -582,10 +617,13 @@ const CmfSource = struct {
                             self.voices[i].midi_channel = -1;
                     }
                     for (0..n) |i| {
-                        if (self.voices[i].note_start > 0 and self.voices[i].midi_channel == channel)
+                        if (self.voices[i].note_start > 0 and self.voices[i].midi_channel == channel) {
                             self.writeInstrument(chip, @intCast(i), self.instrument(wrapped));
+                            self.voices[i].program = wrapped;
+                        }
                     }
                 } else {
+                    self.drums[channel - 11].program = wrapped;
                     self.programPerc(chip, channel, self.instrument(wrapped));
                 }
             },
@@ -635,6 +673,10 @@ const CmfSource = struct {
     const max_events_per_step: u32 = 256;
 
     pub fn step(self: *CmfSource, chip: fmt.Chip) fmt.StepResult {
+        if (self.pending_wait != 0) {
+            self.tick +%= self.pending_wait;
+            self.pending_wait = 0;
+        }
         if (self.delay_remaining == 0) {
             var done = false;
             var events: u32 = 0;
@@ -645,12 +687,16 @@ const CmfSource = struct {
                     // End of track: next delay is the leading VLQ after rewind.
                     self.resetLoopState(chip);
                     self.prev_command = 0;
+                    self.tick = 0;
+                    self.pending_wait = 0;
                     self.delay_remaining = self.readVlq();
                     return .{ .frames = 0, .done = true };
                 }
                 self.delay_remaining = self.readVlq();
                 if (self.pos == 0 and self.delay_remaining == 0 and done) {
                     self.resetLoopState(chip);
+                    self.tick = 0;
+                    self.pending_wait = 0;
                     return .{ .frames = 0, .done = true };
                 }
                 if (self.delay_remaining == 0 and events >= max_events_per_step) {
@@ -661,6 +707,7 @@ const CmfSource = struct {
 
         const wait = self.delay_remaining;
         self.delay_remaining = 0;
+        self.pending_wait = wait;
         const rate = @max(@as(u32, 1), self.ticks_per_second);
         return .{ .frames = fmt.rescale(wait, rate, self.sample_rate, &self.frac) };
     }
@@ -674,11 +721,70 @@ const CmfSource = struct {
             .opl3 = false,
             .system = "OPL2",
             .loop = true,
-            .visualizer = visualizer_name,
+        };
+    }
+
+    pub fn playhead(self: *CmfSource) view.Playhead {
+        return .{
+            .tick = self.tick,
+            .last_instrument = self.last_instrument,
+            .flags = .{ .has_tick = true },
+        };
+    }
+
+    pub fn sequenceState(self: *CmfSource) view.SequenceStateBank {
+        var bank = view.SequenceStateBank{ .channels = midi_channels };
+        for (self.midi, 0..) |ch, i| {
+            const program = if (self.midi_drums and i == 9) self.gm_drum_program else self.programOf(@intCast(i));
+            bank.slots[i] = .{ .program = program, .bend = @intCast(std.math.clamp(ch.pitchbend, 0, 16383)), .transpose = @intCast(std.math.clamp(ch.transpose, -128, 127)) };
+        }
+        for (self.voices[0..self.melodicVoiceCount()], 0..) |v, i| publishVoice(&bank, v, @intCast(i), .fm);
+        if (self.percussive) for (self.drums, 0..) |v, i| {
+            const opl = percChannel(@intCast(i + 11));
+            if (v.note_start != 0 or self.voices[opl].midi_channel == i + 11) publishVoice(&bank, v, opl, .drum);
+        };
+        return bank;
+    }
+
+    fn publishVoice(bank: *view.SequenceStateBank, v: OplVoice, opl_voice: u8, kind: @FieldType(view.ActiveVoice, "kind")) void {
+        const shown = if (v.midi_channel >= 0) v.midi_channel else v.shown_channel;
+        if (shown < 0 or shown >= midi_channels) return;
+        const ch: u16 = @intCast(shown);
+        const note: u8 = @intCast(std.math.clamp(v.midi_note, 0, 127));
+        const keyed = v.note_start != 0;
+        bank.voices[bank.voice_count] = .{ .channel = ch, .program = v.program, .note = note, .velocity = v.velocity, .opl_voice = opl_voice, .keyed = keyed, .kind = kind };
+        bank.voice_count += 1;
+        if (!keyed) return;
+        bank.slots[ch].keyed = true;
+        bank.slots[ch].note = note;
+        bank.slots[ch].opl_voice = opl_voice;
+    }
+
+    pub fn sequenceView(self: *CmfSource) view.SequenceView {
+        return .{
+            .ctx = self,
+            .kind = .linear_midi,
+            .track_count = midi_channels,
+            .channel_count = midi_channels,
+            .tick_rate = self.ticks_per_second,
+            .length_ticks = self.length_ticks,
+            .track = cmfTrack,
+            .eventsInRange = cmfEventsInRange,
+            .eventAt = cmfEventAt,
+            .event_count = @intCast(self.events.len),
+        };
+    }
+
+    pub fn instrumentBank(self: *CmfSource) view.InstrumentBank {
+        return .{
+            .ctx = self,
+            .count = self.inst_count + @as(u16, if (self.midi_drums) default_drum_patches.len else 0),
+            .get = cmfInstrument,
         };
     }
 
     pub fn deinit(self: *CmfSource, gpa: std.mem.Allocator) void {
+        gpa.free(self.events);
         gpa.free(self.music);
         gpa.free(self.instruments);
         if (self.title) |t| gpa.free(t);
@@ -686,6 +792,240 @@ const CmfSource = struct {
         gpa.destroy(self);
     }
 };
+
+fn cmfEventAt(ptr: *anyopaque, index: u32) view.SequenceEvent {
+    const self: *CmfSource = @ptrCast(@alignCast(ptr));
+    return if (index < self.events.len) self.events[index] else .{};
+}
+
+fn cmfTrack(ptr: *anyopaque, index: u16) view.SequenceTrack {
+    const self: *CmfSource = @ptrCast(@alignCast(ptr));
+    if (index >= midi_channels) return .{};
+    var used = false;
+    for (self.channels_in_use) |f| {
+        if (f != 0) {
+            used = true;
+            break;
+        }
+    }
+    const drum = index == 9 and self.midi_drums;
+    return .{
+        .channel = @intCast(index),
+        .program = 0,
+        .kind = if (drum) .drum else .melodic,
+        .in_use = if (used) self.channels_in_use[index] != 0 else true,
+    };
+}
+
+fn cmfEventsInRange(ptr: *anyopaque, tick0: u32, tick1: u32, dest: []view.SequenceEvent) view.EventRange {
+    const self: *CmfSource = @ptrCast(@alignCast(ptr));
+    const events = self.events;
+    var lo: usize = 0;
+    var hi: usize = events.len;
+    while (lo < hi) {
+        const mid = lo + (hi - lo) / 2;
+        if (events[mid].tick < tick0) lo = mid + 1 else hi = mid;
+    }
+    var total: u32 = 0;
+    var written: u16 = 0;
+    var i = lo;
+    while (i < events.len and events[i].tick < tick1) : (i += 1) {
+        total += 1;
+        if (written < dest.len) {
+            dest[written] = events[i];
+            written += 1;
+        }
+    }
+    return .{ .written = written, .total_in_range = total };
+}
+
+fn cmfInstrument(ptr: *anyopaque, index: u16) view.InstrumentInfo {
+    const self: *CmfSource = @ptrCast(@alignCast(ptr));
+    if (index < self.inst_count) {
+        if (index >= self.instruments.len) return .{};
+        return instrumentInfo(self.instruments[index], "");
+    }
+    const drum = index - self.inst_count;
+    if (!self.midi_drums or drum >= default_drum_patches.len) return .{};
+    return instrumentInfo(Instrument.fromPayload(&default_drum_patches[drum]), drum_names[drum]);
+}
+
+fn instrumentInfo(ins: Instrument, name: []const u8) view.InstrumentInfo {
+    const conn = ins.connection;
+    return .{
+        .name = name,
+        .patch = .{ .opl_2op = .{
+            .ops = .{
+                fmt.operatorParams(ins.modulator.char_mult, ins.modulator.scaling, ins.modulator.attack_decay, ins.modulator.sustain_release, ins.modulator.wave),
+                fmt.operatorParams(ins.carrier.char_mult, ins.carrier.scaling, ins.carrier.attack_decay, ins.carrier.sustain_release, ins.carrier.wave),
+                .{},
+                .{},
+            },
+            .op_count = 2,
+            .feedback = @truncate((conn >> 1) & 7),
+            .additive = conn & 1 != 0,
+        } },
+    };
+}
+
+fn indexMusic(gpa: std.mem.Allocator, music: []const u8, inst_count: u16) !struct { events: []view.SequenceEvent, length_ticks: u32 } {
+    var list: std.ArrayList(view.SequenceEvent) = .empty;
+    errdefer list.deinit(gpa);
+
+    var pos: usize = 0;
+    var tick: u32 = 0;
+    var prev: u8 = 0;
+    tick +%= readCappedVlq(music, &pos);
+
+    while (pos < music.len) {
+        var cmd = music[pos];
+        pos += 1;
+        if (cmd & 0x80 == 0) {
+            pos -= 1;
+            cmd = prev;
+        } else prev = cmd;
+
+        const ch: u8 = cmd & 0x0f;
+        var ev: ?view.SequenceEvent = null;
+        switch (cmd & 0xf0) {
+            0x80 => {
+                if (pos + 1 >= music.len) break;
+                const note = music[pos];
+                pos += 2;
+                ev = .{
+                    .tick = tick,
+                    .track = ch,
+                    .channel = ch,
+                    .kind = .note_off,
+                    .payload = .{ .note = .{ .note = note, .velocity = 0 } },
+                };
+            },
+            0x90 => {
+                if (pos + 1 >= music.len) break;
+                const note = music[pos];
+                const vel = music[pos + 1];
+                pos += 2;
+                ev = .{
+                    .tick = tick,
+                    .track = ch,
+                    .channel = ch,
+                    .kind = if (vel == 0) .note_off else .note_on,
+                    .payload = .{ .note = .{ .note = note, .velocity = vel } },
+                };
+            },
+            0xa0 => {
+                if (pos + 1 >= music.len) break;
+                pos += 2;
+                ev = .{
+                    .tick = tick,
+                    .track = ch,
+                    .channel = ch,
+                    .kind = .aftertouch,
+                    .payload = .{ .aftertouch = music[pos - 1] },
+                };
+            },
+            0xb0 => {
+                if (pos + 1 >= music.len) break;
+                const cc = music[pos];
+                const val = music[pos + 1];
+                pos += 2;
+                ev = .{
+                    .tick = tick,
+                    .track = ch,
+                    .channel = ch,
+                    .kind = .control,
+                    .payload = .{ .control = .{ .cc = cc, .value = val } },
+                };
+            },
+            0xc0 => {
+                if (pos >= music.len) break;
+                const patch = music[pos];
+                pos += 1;
+                const bank: u16 = if (inst_count == 0) patch else patch % inst_count;
+                ev = .{
+                    .tick = tick,
+                    .track = ch,
+                    .channel = ch,
+                    .kind = .program,
+                    .payload = .{ .program = bank },
+                };
+            },
+            0xd0 => {
+                if (pos >= music.len) break;
+                const val = music[pos];
+                pos += 1;
+                ev = .{
+                    .tick = tick,
+                    .track = ch,
+                    .channel = ch,
+                    .kind = .aftertouch,
+                    .payload = .{ .aftertouch = val },
+                };
+            },
+            0xe0 => {
+                if (pos + 1 >= music.len) break;
+                const lsb = music[pos];
+                const msb = music[pos + 1];
+                pos += 2;
+                ev = .{
+                    .tick = tick,
+                    .track = ch,
+                    .channel = ch,
+                    .kind = .pitch_bend,
+                    .payload = .{ .pitch_bend = (@as(u16, msb) << 7) | lsb },
+                };
+            },
+            0xf0 => switch (cmd) {
+                0xf0, 0xf7 => {
+                    const start = pos;
+                    const len = readCappedVlq(music, &pos);
+                    pos = @min(music.len, pos + len);
+                    ev = .{
+                        .tick = tick,
+                        .track = view.sequence_unassigned,
+                        .kind = .sysex,
+                        .payload = .{ .sysex_ref = @intCast(@min(start, @as(usize, std.math.maxInt(u16)))) },
+                    };
+                },
+                0xf1 => {
+                    if (pos < music.len) pos += 1;
+                },
+                0xf2 => pos = @min(music.len, pos + 2),
+                0xf3 => {
+                    if (pos < music.len) pos += 1;
+                },
+                0xfc => break,
+                0xff => {
+                    if (pos >= music.len) break;
+                    const meta = music[pos];
+                    pos += 1;
+                    const len = readCappedVlq(music, &pos);
+                    if (meta == 0x2f) break;
+                    if (meta == 0x51 and len >= 3 and pos + 3 <= music.len) {
+                        const us = (@as(u32, music[pos]) << 16) | (@as(u32, music[pos + 1]) << 8) | music[pos + 2];
+                        ev = .{
+                            .tick = tick,
+                            .track = view.sequence_unassigned,
+                            .kind = .tempo,
+                            .payload = .{ .tempo = us },
+                        };
+                    }
+                    pos = @min(music.len, pos + len);
+                },
+                else => {},
+            },
+            else => {},
+        }
+        if (ev) |e| try list.append(gpa, e);
+        if (pos >= music.len) break;
+        tick +%= readCappedVlq(music, &pos);
+    }
+
+    return .{
+        .events = try list.toOwnedSlice(gpa),
+        .length_ticks = tick,
+    };
+}
 
 fn readHeader(data: []const u8) error{InvalidCmf}!?Header {
     if (data.len < 4 or !std.mem.eql(u8, data[0..4], magic)) return null;
@@ -793,7 +1133,7 @@ fn detectMidiDrums(music: []const u8) bool {
     return ch9_note and !ch9_prog and !ch9_non_drum;
 }
 
-fn load(
+pub fn load(
     gpa: std.mem.Allocator,
     data: []const u8,
     ctx: fmt.LoadContext,
@@ -821,11 +1161,15 @@ fn load(
     const music = try gpa.dupe(u8, music_slice);
     errdefer gpa.free(music);
 
-    const title_s = readCString(data, header.title_offset);
-    const artist_s = readCString(data, header.composer_offset);
-    const title = if (title_s.len != 0) try gpa.dupe(u8, title_s) else null;
+    const indexed = try indexMusic(gpa, music, @intCast(instruments.len));
+    errdefer gpa.free(indexed.events);
+
+    var channels_in_use: [midi_channels]u8 = @splat(0);
+    if (data.len >= 36) @memcpy(&channels_in_use, data[0x14..0x24]);
+
+    const title = try cp437.decodeOptional(gpa, readCString(data, header.title_offset));
     errdefer if (title) |t| gpa.free(t);
-    const artist = if (artist_s.len != 0) try gpa.dupe(u8, artist_s) else null;
+    const artist = try cp437.decodeOptional(gpa, readCString(data, header.composer_offset));
     errdefer if (artist) |a| gpa.free(a);
 
     const src = try gpa.create(CmfSource);
@@ -840,6 +1184,9 @@ fn load(
         .title_embedded = title != null,
         .artist = artist,
         .midi_drums = detectMidiDrums(music),
+        .events = indexed.events,
+        .length_ticks = indexed.length_ticks,
+        .channels_in_use = channels_in_use,
     };
 
     const chip = ctx.chip;
@@ -852,15 +1199,10 @@ fn load(
     src.delay_remaining = src.readVlq();
     chip.flush();
 
-    return fmt.MusicSource.init(src);
+    return fmt.MusicSource.init(src, visualizer_name);
 }
 
-pub const format = fmt.Format{
-    .name = "CMF",
-    .extensions = &.{".cmf"},
-    .visualizer = visualizer_name,
-    .load = load,
-};
+pub const format = fmt.Format.init(@This());
 
 // --- tests -------------------------------------------------------------------
 
@@ -906,21 +1248,137 @@ test "cmf loads and ends on meta end-of-track" {
     defer src.deinit(gpa);
 
     try std.testing.expectEqualStrings("CMF", src.info().format_name);
+    try std.testing.expectEqualStrings("sequence", src.info().visualizer);
+    const sv = src.views().sequence.?;
+    try std.testing.expectEqual(view.SequenceKind.linear_midi, sv.kind);
+    try std.testing.expectEqual(@as(u16, midi_channels), sv.track_count);
+    try std.testing.expect(sv.event_count >= 2);
+    var dest: [8]view.SequenceEvent = undefined;
+    try std.testing.expectEqual(@as(u16, 0), sv.eventsInRange.?(sv.ctx, 0, 0, &dest).written);
+    const range = sv.eventsInRange.?(sv.ctx, 0, 100, dest[0..]);
+    try std.testing.expect(range.written >= 2);
+    try std.testing.expectEqual(view.SequenceEventKind.note_on, dest[0].kind);
+    try std.testing.expectEqual(@as(u8, 60), dest[0].payload.note.note);
+    try std.testing.expectEqual(@as(u16, 1), src.views().instruments.?.count);
     const drained = fmt.testDrain(src, chip_adapter.fromOpal(&chip), 64);
     try std.testing.expect(drained.done);
     try std.testing.expect(drained.frames > 0);
 }
 
+test "CMF snapshot retains a chord after one note releases" {
+    var buf: [128]u8 = undefined;
+    const data = makeMinimalCmf(&buf, &.{ 0, 0x90, 60, 64, 0, 0x90, 64, 96, 10, 0x80, 60, 0, 10, 0xff, 0x2f, 0 });
+    const src = (try load(std.testing.allocator, data, .{ .sample_rate = 44100, .chip = fmt.noop_chip })).?;
+    defer src.deinit(std.testing.allocator);
+    _ = src.step(fmt.noop_chip);
+    const chord = src.sequenceState().?;
+    try std.testing.expectEqual(@as(u16, 2), chord.voice_count);
+    try std.testing.expectEqual(@as(u8, 64), chord.voices[0].velocity);
+    try std.testing.expectEqual(@as(u8, 96), chord.voices[1].velocity);
+    _ = src.step(fmt.noop_chip);
+    const held = src.sequenceState().?;
+    try std.testing.expectEqual(@as(u16, 2), held.voice_count);
+    try std.testing.expect(!held.voices[0].keyed);
+    try std.testing.expect(held.voices[1].keyed);
+    try std.testing.expectEqual(@as(u8, 64), held.voices[1].note);
+    try std.testing.expect(held.slots[0].keyed);
+    try std.testing.expectEqual(@as(u8, 64), held.slots[0].note);
+}
+
+test "CMF publishes released voices unkeyed on the channel that played them" {
+    var buf: [128]u8 = undefined;
+    const data = makeMinimalCmf(&buf, &.{ 0, 0xb0, 0x67, 1, 0, 0x90, 60, 64, 0, 0x9c, 60, 64, 10, 0x80, 60, 0, 0, 0x8c, 60, 0, 10, 0xff, 0x2f, 0 });
+    const src = (try load(std.testing.allocator, data, .{ .sample_rate = 44100, .chip = fmt.noop_chip })).?;
+    defer src.deinit(std.testing.allocator);
+    _ = src.step(fmt.noop_chip);
+    _ = src.step(fmt.noop_chip);
+    const released = src.sequenceState().?;
+    try std.testing.expectEqual(@as(u16, 2), released.voice_count);
+    for (released.voices[0..2], [_]u16{ 0, 12 }, [_]u8{ 0, 7 }) |voice, channel, opl_voice| {
+        try std.testing.expect(!voice.keyed);
+        try std.testing.expectEqual(channel, voice.channel);
+        try std.testing.expectEqual(opl_voice, voice.opl_voice);
+    }
+    try std.testing.expect(!released.slots[0].keyed and !released.slots[12].keyed);
+}
+
+test "CMF keeps publishing a released voice across a program change on its channel" {
+    var buf: [128]u8 = undefined;
+    const data = makeMinimalCmf(&buf, &.{ 0, 0x90, 60, 64, 10, 0x80, 60, 0, 10, 0xc0, 0, 10, 0xff, 0x2f, 0 });
+    const src = (try load(std.testing.allocator, data, .{ .sample_rate = 44100, .chip = fmt.noop_chip })).?;
+    defer src.deinit(std.testing.allocator);
+    for (0..3) |_| _ = src.step(fmt.noop_chip);
+    const released = src.sequenceState().?;
+    try std.testing.expectEqual(@as(u16, 1), released.voice_count);
+    try std.testing.expect(!released.voices[0].keyed);
+    try std.testing.expectEqual(@as(u16, 0), released.voices[0].channel);
+}
+
+test "CMF program change frees its channel's released voices for the next note" {
+    var buf: [128]u8 = undefined;
+    const data = makeMinimalCmf(&buf, &.{ 0, 0x90, 60, 64, 10, 0x80, 60, 0, 10, 0xc0, 0, 0, 0x91, 62, 64, 10, 0xff, 0x2f, 0 });
+    const src = (try load(std.testing.allocator, data, .{ .sample_rate = 44100, .chip = fmt.noop_chip })).?;
+    defer src.deinit(std.testing.allocator);
+    for (0..3) |_| _ = src.step(fmt.noop_chip);
+    const state = src.sequenceState().?;
+    try std.testing.expectEqual(@as(u16, 1), state.voice_count);
+    try std.testing.expect(state.voices[0].keyed);
+    try std.testing.expectEqual(@as(u16, 1), state.voices[0].channel);
+    try std.testing.expectEqual(@as(u8, 0), state.voices[0].opl_voice);
+}
+
+test "CMF program change renames the held voices it reloads" {
+    var instruments = [_]Instrument{ Instrument.fromPayload(&default_patches[0]), Instrument.fromPayload(&default_patches[1]) };
+    const songs = [_][]const u8{
+        &.{ 0, 0xc0, 0, 0, 0x90, 60, 64, 0, 0xc0, 1, 16, 0x80, 60, 0, 0, 0xff, 0x2f, 0 },
+        &.{ 0, 0xb0, 0x67, 1, 0, 0x9c, 60, 64, 0, 0xcc, 1, 16, 0x8c, 60, 0, 0, 0xff, 0x2f, 0 },
+    };
+    for (songs, [_]u16{ 0, 12 }) |music, channel| {
+        var src = CmfSource{
+            .sample_rate = 44100,
+            .ticks_per_second = 96,
+            .music = music,
+            .instruments = &instruments,
+            .inst_count = 2,
+            .title = null,
+            .title_embedded = false,
+            .artist = null,
+        };
+        src.delay_remaining = src.readVlq();
+        _ = src.step(fmt.noop_chip);
+        const held = src.sequenceState();
+        try std.testing.expectEqual(@as(u16, 1), held.voice_count);
+        try std.testing.expectEqual(channel, held.voices[0].channel);
+        try std.testing.expectEqual(@as(u16, 1), held.voices[0].program);
+        try std.testing.expectEqual(@as(u16, 1), held.slots[channel].program);
+    }
+}
+
+test "CMF drums sharing an OPL voice release independently" {
+    var buf: [128]u8 = undefined;
+    const data = makeMinimalCmf(&buf, &.{ 0, 0xb0, 0x67, 1, 0, 0x9c, 60, 64, 0, 0x9f, 72, 96, 10, 0x8c, 60, 0, 10, 0xff, 0x2f, 0 });
+    const src = (try load(std.testing.allocator, data, .{ .sample_rate = 44100, .chip = fmt.noop_chip })).?;
+    defer src.deinit(std.testing.allocator);
+    _ = src.step(fmt.noop_chip);
+    const drums = src.sequenceState().?;
+    try std.testing.expectEqual(@as(u16, 2), drums.voice_count);
+    try std.testing.expectEqual(drums.voices[0].opl_voice, drums.voices[1].opl_voice);
+    _ = src.step(fmt.noop_chip);
+    const held = src.sequenceState().?;
+    try std.testing.expectEqual(@as(u16, 1), held.voice_count);
+    try std.testing.expectEqual(@as(u16, 15), held.voices[0].channel);
+}
+
 test "cmf rejects non-ctmf" {
     const gpa = std.testing.allocator;
-    try std.testing.expect(try load(gpa, "XXXX" ++ [_]u8{0} ** 40, .{
+    try std.testing.expect(try load(gpa, "XXXX" ++ @as([40]u8, @splat(0)), .{
         .sample_rate = 44100,
         .chip = fmt.noop_chip,
         .ext = ".cmf",
     }) == null);
 }
 
-test "cmf title from tag offset" {
+test "cmf title from tag offset is transcoded from CP437" {
     const gpa = std.testing.allocator;
     // Build by hand with title between header and instruments.
     var buf: [160]u8 = @splat(0);
@@ -935,7 +1393,7 @@ test "cmf title from tag offset" {
     std.mem.writeInt(u16, buf[12..14], 96, .little);
     std.mem.writeInt(u16, buf[14..16], title_off, .little);
     std.mem.writeInt(u16, buf[36..38], 1, .little);
-    @memcpy(buf[title_off .. title_off + 4], "Song");
+    @memcpy(buf[title_off .. title_off + 4], "Caf\x82");
     buf[title_off + 4] = 0;
     @memcpy(buf[inst_off .. inst_off + payload_bytes], &init_instrument);
     const music = [_]u8{ 0x00, 0xff, 0x2f, 0x00 };
@@ -947,7 +1405,7 @@ test "cmf title from tag offset" {
         .ext = ".cmf",
     })).?;
     defer src.deinit(gpa);
-    try std.testing.expectEqualStrings("Song", src.info().title.?);
+    try std.testing.expectEqualStrings("Café", src.info().title.?);
     try std.testing.expect(src.info().title_embedded);
 }
 
@@ -1115,4 +1573,15 @@ test "cmf gm channel-9 bass drum uses the fallback percussion patch" {
     _ = src.step(rec.chip());
     try std.testing.expectEqual(@as(u8, 0x00), rec.regs[0x30]);
     try std.testing.expectEqual(@as(u8, 0xf8), rec.regs[0x70]);
+
+    const bank = src.views().instruments.?;
+    try std.testing.expectEqual(state.inst_count + 5, bank.count);
+    try std.testing.expectEqualStrings("GM bass drum", bank.get(bank.ctx, state.inst_count).name);
+    const live = src.sequenceState().?;
+    try std.testing.expect(live.voice_count != 0);
+    try std.testing.expectEqual(state.inst_count, live.voices[0].program);
+    try std.testing.expectEqual(@as(u16, 9), live.voices[0].channel);
+    try std.testing.expectEqual(state.inst_count, live.slots[9].program);
+    try std.testing.expect(live.slots[9].keyed);
+    try std.testing.expectEqual(state.inst_count, src.playhead().?.last_instrument);
 }

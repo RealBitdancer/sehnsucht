@@ -1,24 +1,27 @@
-# RAW (Rdos / RAC raw OPL capture)
+# RAW / RAC (Rdos / RAC raw OPL capture)
 
-**Extensions:** `.raw` (case-insensitive)
+**Extensions:** `.raw`, `.rac` (case-insensitive)
 **Chip:** OPL2 (optional second chip via bank select)
 **Module:** `src/formats/raw.zig`
 
 A register capture produced by RdosPlay and related tools (historically RAC).
 Each record is a register write or a control code. Timing comes from the PC
-interval timer divisor stored in the file.
+interval timer divisor stored in the file. `.rac` is the same layout. AdPlug
+registered that alias for CrawPlayer. The original RAC TSR wrote `RACDATA.RAW`.
 
 External reference:
 [AdPlug RAW player](https://github.com/adplug/adplug/blob/master/src/raw.cpp).
 
 ## Identification
 
-1. The path ends in `.raw`, ignoring case.
+1. The path ends in `.raw` or `.rac`, ignoring case.
 2. The first eight bytes are exactly `RAWADATA`.
 3. At least ten header bytes and one complete two-byte record are present.
 
-A bad magic value means the input is not RAW (return `null`). Truncated bodies
-after a valid magic return `error.InvalidRaw`.
+A `.rac` path reports format name `RAC`. A `.raw` path reports `RAW`.
+
+A bad magic value means the input is not RAWADATA (return `null`). Truncated
+bodies after a valid magic return `error.InvalidRaw`.
 
 ## File layout
 
@@ -47,12 +50,12 @@ Each record is two bytes:
 |----------:|--------:|---------|
 | `0x00` | *N* | Delay *N* ticks (*N* = 0 means 256) |
 | `0x02` | `0` | Next record is the new speed: `param + (command << 8)` |
-| `0x02` | *C* ≠ 0 | Select chip *C* − 1 (bank `0x100 * (C - 1)`) |
+| `0x02` | `1`, `2` | Select chip *C* − 1 (bank `0x100 * (C - 1)`) |
+| `0x02` | other | Ignored. The active bank stays selected, as in AdPlug |
 | `0xFF` | `0xFF` | End of stream |
 | other | *V* | Write register `command` with value `param` on the active bank |
 
-A delay of zero never occurs in real captures, and the format specification
-does not define it. Playing it as 256 ticks is this player's defensive choice.
+A stored delay of zero is interpreted as 256 ticks.
 AdPlug uses an 8-bit delay counter. A stored zero underflows to 255, and
 together with the update that consumed the record that is also 256 ticks.
 
@@ -104,13 +107,13 @@ with the shared fractional carry used by other stream formats.
 
 ## Playback
 
-RAW uses the stream visualizer and OPL2 (dual-chip captures set bank `0x100`).
+RAW and RAC use the stream visualizer and OPL2 (dual-chip captures set bank `0x100`).
 Load enables NEW so chip 2 is a real second bank. Writes to `C0`..`C8` get
 CHA/CHB (`0x30`).
-When the stream ends, the decoder rewinds the cursor and bank to the start
-and reports a song boundary (`done`). The current speed is kept. A capture
-that changed the divisor mid-stream therefore loops at the last speed, not
-the header clock.
+When the stream ends, the decoder resets the cursor, bank, and timer divisor
+to their initial values and reports a song boundary (`done`). Each pass starts
+at the header clock. The dump view also reports that initial divisor, so its
+metadata does not change during playback.
 
 ## Metadata
 
@@ -120,14 +123,6 @@ the file name.
 
 ## Errors
 
-Paths without `.raw` are not claimed. Wrong magic declines the file. A valid
-magic with a truncated header or a body shorter than one record returns
+Paths without `.raw` or `.rac` are not claimed. Wrong magic declines the file. A
+valid magic with a truncated header or a body shorter than one record returns
 `error.InvalidRaw`.
-
-## Compatibility notes
-
-* Generic `.raw` dumps that are not Rdos captures are declined by the magic
-  check.
-* Track duration is measured by stepping a second instance of the decoder at
-  load time, so mid-stream speed changes are counted exactly.
-* Description tags after `0x1C` are ignored.

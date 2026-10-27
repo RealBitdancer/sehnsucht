@@ -1,0 +1,23 @@
+#EXTM3U
+#PLAYLIST:JBM
+# Remote JBM set from Modland. Johannes Bjerregaard (Jozz) 1991-1992 player.
+# Nine tunes. That is the known public corpus.
+
+#EXTINF:-1,Johannes Bjerregaard - 15l
+https://modland.com/pub/modules/Ad%20Lib/Johannes%20Bjerregard%20Module/Johannes%20Bjerregard/15l.jbm
+#EXTINF:-1,Johannes Bjerregaard - DDD
+https://modland.com/pub/modules/Ad%20Lib/Johannes%20Bjerregard%20Module/Johannes%20Bjerregard/ddd.jbm
+#EXTINF:-1,Johannes Bjerregaard - Demo1
+https://modland.com/pub/modules/Ad%20Lib/Johannes%20Bjerregard%20Module/Johannes%20Bjerregard/demo1.jbm
+#EXTINF:-1,Johannes Bjerregaard - Demo2
+https://modland.com/pub/modules/Ad%20Lib/Johannes%20Bjerregard%20Module/Johannes%20Bjerregard/demo2.jbm
+#EXTINF:-1,Johannes Bjerregaard - Demo3
+https://modland.com/pub/modules/Ad%20Lib/Johannes%20Bjerregard%20Module/Johannes%20Bjerregard/demo3.jbm
+#EXTINF:-1,Johannes Bjerregaard - Demo4
+https://modland.com/pub/modules/Ad%20Lib/Johannes%20Bjerregard%20Module/Johannes%20Bjerregard/demo4.jbm
+#EXTINF:-1,Johannes Bjerregaard - Demo5
+https://modland.com/pub/modules/Ad%20Lib/Johannes%20Bjerregard%20Module/Johannes%20Bjerregard/demo5.jbm
+#EXTINF:-1,Johannes Bjerregaard - Jazzjing
+https://modland.com/pub/modules/Ad%20Lib/Johannes%20Bjerregard%20Module/Johannes%20Bjerregard/jazzjing.jbm
+#EXTINF:-1,Johannes Bjerregaard - Untitled
+https://modland.com/pub/modules/Ad%20Lib/Johannes%20Bjerregard%20Module/Johannes%20Bjerregard/untitled.jbm

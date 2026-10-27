@@ -5,7 +5,7 @@
 
 const std = @import("std");
 
-const format = @import("format.zig");
+const view = @import("view.zig");
 
 pub const pcm_band_count: usize = 48;
 
@@ -21,6 +21,7 @@ pub fn pcmBandFreq(sample_rate: u32, band: usize) f32 {
 }
 
 pub const Bridge = struct {
+    branch_request: std.atomic.Value(u32) = .init(std.math.maxInt(u32)),
     paused: std.atomic.Value(bool) = .init(false),
     quit: std.atomic.Value(bool) = .init(false),
     halt_at_songend: std.atomic.Value(bool) = .init(false),
@@ -28,8 +29,15 @@ pub const Bridge = struct {
     muted: std.atomic.Value(bool) = .init(false),
     position_frames: std.atomic.Value(u64) = .init(0),
     loop_count: std.atomic.Value(u32) = .init(0),
-    tracker_pos: std.atomic.Value(u64) = .init(0),
-    levels: [9]std.atomic.Value(u8) = @splat(.init(0)),
+    playhead: view.SeqLock(view.Playhead) = .{},
+    channels: view.SeqLock(view.ChannelStateBank) = .{},
+    pattern_cursors: view.SeqLock(view.PatternCursorBank) = .{},
+    sequence: view.SeqLock(view.SequenceStateBank) = .{},
+    chip: view.SeqLock(view.ChipSnapshot) = .{},
+    pcm: view.SeqLock(view.PcmState) = .{},
+    write_log: [view.write_log_cap]std.atomic.Value(u32) = @splat(.init(0)),
+    write_log_i: std.atomic.Value(u32) = .init(0),
+    levels: [view.max_opl_voices]std.atomic.Value(u8) = @splat(.init(0)),
     pcm_peak: std.atomic.Value(u8) = .init(0),
     pcm_rms_l: std.atomic.Value(u8) = .init(0),
     pcm_rms_r: std.atomic.Value(u8) = .init(0),
@@ -39,9 +47,21 @@ pub const Bridge = struct {
     sample_rate: u32 = 44100,
 
     pub fn resetTrackState(self: *Bridge) void {
+        self.branch_request.store(std.math.maxInt(u32), .release);
         self.position_frames.store(0, .release);
         self.loop_count.store(0, .release);
-        self.tracker_pos.store(0, .release);
+        self.resetVisualState();
+    }
+
+    pub fn resetVisualState(self: *Bridge) void {
+        self.playhead.write(.{});
+        self.channels.write(.{});
+        self.pattern_cursors.write(.{});
+        self.sequence.write(.{});
+        self.chip.write(.{});
+        self.pcm.write(.{});
+        self.write_log_i.store(0, .release);
+        for (&self.write_log) |*slot| slot.store(0, .release);
         self.pcm_peak.store(0, .release);
         self.pcm_rms_l.store(0, .release);
         self.pcm_rms_r.store(0, .release);
@@ -49,14 +69,6 @@ pub const Bridge = struct {
         self.pcm_peak_r.store(0, .release);
         for (&self.levels) |*l| l.store(0, .release);
         for (&self.pcm_bands) |*b| b.store(0, .release);
-    }
-
-    pub fn readTrackerPos(self: *const Bridge) format.TrackerPos {
-        return @bitCast(self.tracker_pos.load(.acquire));
-    }
-
-    pub fn publishTrackerPos(self: *Bridge, p: format.TrackerPos) void {
-        self.tracker_pos.store(@bitCast(p), .release);
     }
 };
 
@@ -79,7 +91,9 @@ test "resetTrackState clears playback state but not session flags" {
     br.loop_count.store(2, .release);
     br.levels[3].store(9, .release);
     br.pcm_bands[0].store(7, .release);
-    br.publishTrackerPos(.{ .row = 5 });
+    br.playhead.write(.{ .row = 5, .flags = .{ .has_row = true } });
+    br.write_log[0].store(1, .release);
+    br.write_log_i.store(4, .release);
     br.resetTrackState();
     try std.testing.expect(br.paused.load(.acquire));
     try std.testing.expectEqual(@as(u8, 40), br.volume.load(.acquire));
@@ -88,22 +102,31 @@ test "resetTrackState clears playback state but not session flags" {
     try std.testing.expectEqual(@as(u32, 0), br.loop_count.load(.acquire));
     try std.testing.expectEqual(@as(u8, 0), br.levels[3].load(.acquire));
     try std.testing.expectEqual(@as(u8, 0), br.pcm_bands[0].load(.acquire));
-    try std.testing.expectEqual(@as(u8, 0), br.readTrackerPos().row);
+    try std.testing.expectEqual(@as(u16, 0), br.playhead.read().row);
+    try std.testing.expectEqual(@as(u32, 0), br.playhead.seq.load(.acquire) & 1);
+    try std.testing.expectEqual(@as(u32, 0), br.write_log_i.load(.acquire));
+    try std.testing.expectEqual(@as(u32, 0), br.write_log[0].load(.acquire));
 }
 
-test "TrackerPos round-trips through the packed u64" {
+test "Playhead round-trips through the seqlock" {
     var br = Bridge{};
-    br.publishTrackerPos(.{
-        .order_pos = 3,
+    br.playhead.write(.{
+        .order = 3,
         .row = 42,
         .pattern = 17,
         .speed = 6,
         .last_instrument = 99,
+        .flags = .{
+            .has_order = true,
+            .has_row = true,
+            .has_pattern = true,
+            .has_speed = true,
+        },
     });
-    const p = br.readTrackerPos();
-    try std.testing.expectEqual(@as(u8, 3), p.order_pos);
-    try std.testing.expectEqual(@as(u8, 42), p.row);
-    try std.testing.expectEqual(@as(u8, 17), p.pattern);
-    try std.testing.expectEqual(@as(u8, 6), p.speed);
-    try std.testing.expectEqual(@as(u8, 99), p.last_instrument);
+    const p = br.playhead.read();
+    try std.testing.expectEqual(@as(u16, 3), p.order);
+    try std.testing.expectEqual(@as(u16, 42), p.row);
+    try std.testing.expectEqual(@as(u16, 17), p.pattern);
+    try std.testing.expectEqual(@as(u16, 6), p.speed);
+    try std.testing.expectEqual(@as(u16, 99), p.last_instrument);
 }

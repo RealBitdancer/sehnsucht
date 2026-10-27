@@ -152,6 +152,27 @@ pub const colors = Colors{
     .meter_off_fg = disabled,
     .master_label_fg = secondary,
     .vu_empty_fg = ghost,
+
+    .trk_summary_fg = secondary,
+    .trk_focus_fg = black,
+    .trk_focus_bg = yellow,
+    .trk_live_fg = cyan,
+    .vol_cell_fg = yellow,
+    .fx_letter_fg = magenta,
+    .ch_pcm_fg = yellow,
+    .ch_control_fg = secondary,
+    .ch_drum_fg = magenta,
+    .ch_4op_fg = cyan,
+    .ch_page_fg = cyan,
+    .macro_pos_fg = yellow,
+    .note_fixed_fg = yellow,
+    .voice_key_on_fg = cyan,
+    .voice_key_off_fg = disabled,
+    .dump_reg_fg = cyan,
+    .dump_val_fg = white,
+    .seq_track_fg = cyan,
+    .seq_event_fg = white,
+    .order_ptr_fg = yellow,
 };
 
 pub const vu_stops = [3]VuStop{

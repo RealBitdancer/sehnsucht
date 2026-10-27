@@ -200,12 +200,13 @@ Duration is the sum of decoded stream delays. The header duration is not used.
 
 ## Playback
 
-- End of the bounded stream rewinds to the start, resets bank to 0, and reports a `done`
-  edge so the engine loop counter advances. The player loops indefinitely.
+End of the bounded stream rewinds to the start, resets bank to 0, and reports
+a song boundary. A single file loops. A playlist can advance at that boundary.
 
 sehnsucht uses the stream visualizer and sends both register banks to one
-emulated OPL device. Dual OPL2 and OPL3 captures enable NEW at load.
-Writes to `C0`..`C8` get CHA/CHB (`0x30`) so bank 1 is audible.
+emulated OPL device. Dual-OPL2 captures enable NEW at load and add CHA/CHB
+(`0x30`) to C0 writes so both banks are audible. Native OPL3 captures retain
+their recorded mode and panning values, including silent speaker settings.
 
 ## Metadata
 
@@ -219,12 +220,3 @@ Bad magic or a file shorter than 12 bytes is not DRO. A truncated selected
 header produces `TruncatedDro`. Nonzero v2 format or compression values produce
 `UnsupportedDro2`. A truncated command or invalid codemap index ends the
 current pass.
-
-## Compatibility notes
-
-- No side files. The capture is self-contained.
-- Dual OPL3 is not representable in DRO v0.1. Converters that fold a second
-  OPL3 chip onto one chip’s two banks preserve writes but not true dual-chip
-  timing.
-- Pair with [vgz2dro](https://github.com/RealBitdancer/vgz2dro) to turn
-  OPL-family VGM/VGZ into DRO for playback here.

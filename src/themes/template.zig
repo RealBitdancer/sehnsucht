@@ -10,10 +10,10 @@ const base = @import("midnight_azure.zig");
 
 pub const theme = Theme.derive(base.theme, "Example", "Example theme derived from Midnight Azure.", .{
     .colors = &.{
-        Theme.color("brand_fg", .{ .rgb = .{ 0xFF, 0xFF, 0xFF } }),
+        Theme.color(.brand_fg, .{ .rgb = .{ 0xFF, 0xFF, 0xFF } }),
     },
     .typography = &.{
-        Theme.text("emphasis", .{ .italic = true }),
+        Theme.text(.emphasis, .{ .italic = true }),
     },
 });
 

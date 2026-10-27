@@ -7,18 +7,22 @@ const std = @import("std");
 const opal = @import("opal");
 
 const fmt = @import("../format.zig");
+const view = @import("../view.zig");
 const chip_adapter = @import("../chip.zig");
 
 const channels = 9;
+pub const format_name = "HSC";
+pub const extensions = &.{ ".hsc", ".hsp" };
 pub const visualizer_name = "tracker";
+pub const view_caps = view.ViewCaps{ .pattern = true, .order = true, .instruments = true };
 const rows_per_pattern = 64;
 const instrument_count = 128;
 const instrument_size = 12;
 const order_len = 51;
-const order_slots = 256;
 const max_patterns = 50;
 const header_bytes = instrument_count * instrument_size + order_len;
 const pattern_bytes = rows_per_pattern * channels * 2;
+const min_file_bytes = header_bytes + pattern_bytes;
 const max_file_bytes = header_bytes + max_patterns * pattern_bytes + 1;
 
 const tick_num = 5;
@@ -47,16 +51,11 @@ const Reg = struct {
 };
 
 const EffectHi = struct {
-    const global: u8 = 0x00;
     const slide_up: u8 = 0x10;
     const slide_down: u8 = 0x20;
-    const percussion: u8 = 0x50;
-    const feedback: u8 = 0x60;
     const carrier_vol: u8 = 0xa0;
     const modulator_vol: u8 = 0xb0;
     const both_vol: u8 = 0xc0;
-    const position_jump: u8 = 0xd0;
-    const speed: u8 = 0xf0;
 };
 
 const level_mask: u8 = 63;
@@ -114,6 +113,10 @@ const Channel = struct {
     instrument: u8 = 0xFF,
     freq: u16 = 0,
     dirty: bool = false,
+    gate: bool = false,
+    note: u8 = 0xFF,
+    vol_car: u8 = 0,
+    vol_mod: u8 = 0,
 };
 
 const PatternCell = struct {
@@ -139,11 +142,10 @@ const HscSource = struct {
     sample_rate: u32,
     frac: u32 = 0,
     instruments: [instrument_count]Instrument = @splat(.{}),
-    order: [order_slots]u8 = @splat(song_end_marker),
+    order: [order_len]u8 = @splat(song_end_marker),
     file: []const u8,
     num_patterns: u8,
     channel: [channels]Channel = @splat(.{}),
-    key_block: [channels]u8 = @splat(0),
     row: u8 = 0,
     order_pos: u8 = 0,
     pattern_break: bool = false,
@@ -154,6 +156,8 @@ const HscSource = struct {
     cur_row: u8 = 0,
     cur_pattern: u8 = 0,
     last_instrument: u8 = 0,
+    format_name: []const u8 = "HSC",
+    used_instruments: u128 = std.math.maxInt(u128),
 
     fn instrument(self: *const HscSource, index: u8) *const Instrument {
         return &self.instruments[index & (instrument_count - 1)];
@@ -182,9 +186,9 @@ const HscSource = struct {
         self.channel[chan].dirty = false;
         const lo: u8 = @truncate(self.channel[chan].freq);
         const b0: u8 = @truncate(self.channel[chan].freq >> 8);
-        self.key_block[chan] = b0;
         chip.writeReg(Reg.fnum_lo + chan, lo +% ins.slide);
         chip.writeReg(Reg.key_block + chan, b0);
+        self.channel[chan].gate = b0 & key_on_bit != 0;
     }
 
     fn slideFreq(self: *HscSource, chan: u8, delta: u8, up: bool) void {
@@ -197,10 +201,13 @@ const HscSource = struct {
     fn setVolume(self: *HscSource, chip: fmt.Chip, chan: u8, carrier_vol: u8, modulator_vol: u8) void {
         const ins = self.instrument(self.channel[chan].instrument);
         const op = op_offset[chan];
+        self.channel[chan].vol_car = carrier_vol;
         chip.writeReg(Reg.carrier_level + op, carrier_vol | ins.carrierKslBits());
         if (ins.additive()) {
+            self.channel[chan].vol_mod = modulator_vol;
             chip.writeReg(Reg.modulator_level + op, modulator_vol | ins.modulatorKslBits());
         } else {
+            self.channel[chan].vol_mod = ins.modulatorLevelField();
             chip.writeReg(Reg.modulator_level + op, ins.modulator_level);
         }
     }
@@ -212,6 +219,7 @@ const HscSource = struct {
         const op = op_offset[chan];
         self.channel[chan].instrument = index;
         self.last_instrument = index;
+        self.channel[chan].gate = false;
         chip.writeReg(Reg.key_block + chan, 0);
         chip.writeReg(Reg.feedback + chan, ins.feedback_conn);
         chip.writeReg(Reg.carrier_char + op, ins.carrier_char);
@@ -234,12 +242,14 @@ const HscSource = struct {
         if (note == note_off_raw) {
             self.channel[chan].freq &= ~@as(u16, 0x2000);
             self.channel[chan].dirty = true;
+            self.channel[chan].note = 0xFF;
             return;
         }
         const n = note -% 1;
         chip.writeReg(Reg.key_block + chan, 0);
         self.channel[chan].freq = noteWord(n);
         self.channel[chan].dirty = true;
+        self.channel[chan].note = n;
         self.last_instrument = self.channel[chan].instrument;
     }
 
@@ -285,15 +295,21 @@ const HscSource = struct {
                     self.slideFreq(chan, eff_op + 1, pc.effect & EffectHi.slide_up != 0);
                 },
                 EffectHi.carrier_vol => {
-                    chip.writeReg(Reg.carrier_level + op_offset[chan], eff_op << 2);
+                    const db: u8 = eff_op << 2;
+                    self.channel[chan].vol_car = db;
+                    chip.writeReg(Reg.carrier_level + op_offset[chan], db);
                 },
                 EffectHi.modulator_vol => {
-                    chip.writeReg(Reg.modulator_level + op_offset[chan], eff_op << 2);
+                    const db: u8 = eff_op << 2;
+                    self.channel[chan].vol_mod = db;
+                    chip.writeReg(Reg.modulator_level + op_offset[chan], db);
                 },
                 EffectHi.both_vol => {
                     const db: u8 = eff_op << 2;
+                    self.channel[chan].vol_car = db;
                     chip.writeReg(Reg.carrier_level + op_offset[chan], db);
                     if (ins.additive()) {
+                        self.channel[chan].vol_mod = db;
                         chip.writeReg(Reg.modulator_level + op_offset[chan], db);
                     }
                 },
@@ -344,68 +360,173 @@ const HscSource = struct {
 
     /// No title: the file carries none and HSC synthesizes none, so the shell
     /// falls back to the file name without its extension.
-    pub fn info(_: *HscSource) fmt.TrackInfo {
+    pub fn info(self: *HscSource) fmt.TrackInfo {
         return .{
-            .format_name = "HSC",
+            .format_name = self.format_name,
             .opl3 = false,
             .system = "OPL2",
             .loop = true,
-            .visualizer = visualizer_name,
         };
     }
 
-    pub fn pos(self: *HscSource) fmt.TrackerPos {
+    pub fn playhead(self: *HscSource) view.Playhead {
         return .{
-            .order_pos = self.cur_order,
+            .order = self.cur_order,
             .row = self.cur_row,
             .pattern = self.cur_pattern,
             .speed = @truncate(self.speed),
             .last_instrument = self.last_instrument,
+            .flags = .{
+                .has_order = true,
+                .has_row = true,
+                .has_pattern = true,
+                .has_speed = true,
+            },
         };
     }
 
-    pub fn trackerView(self: *HscSource) fmt.TrackerView {
+    pub fn patternView(self: *HscSource) view.PatternView {
         return .{
             .ctx = self,
+            .grid = .shared_pattern,
+            .occupancy = .packed_event,
+            .columns = &fmt.hsc_columns,
+            .effect_style = .nibble,
+            .cell_template = fmt.hsc_cell_template,
             .channels = channels,
             .rows_per_pattern = rows_per_pattern,
             .num_patterns = self.num_patterns,
-            .order = self.order[0..order_len],
-            .cell = cell,
-            .instrument = instrumentView,
+            .rate_text = "18.2 Hz",
+            .cell = viewCell,
+            .effectLexicon = hscLexicon,
         };
     }
 
-    fn cell(ptr: *anyopaque, pattern: u8, row: u8, chan: u8) fmt.TrackerCell {
+    fn orderDisplayLen(self: *const HscSource) u16 {
+        for (self.order, 0..) |v, i| {
+            if (v == song_end_marker) return @intCast(i);
+        }
+        return order_len;
+    }
+
+    pub fn orderView(self: *HscSource) view.OrderView {
+        return .{
+            .ctx = self,
+            .len = self.orderDisplayLen(),
+            .kind = .shared_index,
+            .entry = hscOrder,
+        };
+    }
+
+    pub fn instrumentBank(self: *HscSource) view.InstrumentBank {
+        return .{
+            .ctx = self,
+            .count = instrument_count,
+            .get = hscInstrument,
+        };
+    }
+
+    fn viewCell(ptr: *anyopaque, pattern: u16, row: u16, chan: u16) view.Cell {
         const self: *HscSource = @ptrCast(@alignCast(ptr));
-        const raw = self.patternCell(pattern, row, chan) orelse return .{ .kind = .empty };
+        if (pattern > 255 or row > 255 or chan > 255) return .{};
+        const raw = self.patternCell(@intCast(pattern), @intCast(row), @intCast(chan)) orelse return .{};
         if (raw.isInstrumentSet()) {
-            return .{ .kind = .set_instrument, .arg = raw.effect & (instrument_count - 1) };
+            return .{ .instrument = raw.effect & (instrument_count - 1) };
         }
         if (raw.note == 0) {
-            if (raw.effect == 0) return .{ .kind = .empty };
-            return .{ .kind = .effect_only, .arg = raw.effect };
+            if (raw.effect == 0) return .{};
+            return .{ .effects = .{ .{ .cmd = raw.effect, .param = 0 }, .{} } };
         }
         if (raw.note == note_off_raw) {
-            return .{ .kind = .note_off, .arg = raw.effect };
+            return .{ .note = .off, .effects = .{ .{ .cmd = raw.effect, .param = 0 }, .{} } };
         }
         const n = raw.note -% 1;
         return .{
-            .kind = .note,
-            .semitone = n % 12,
-            .octave = n / 12,
-            .arg = raw.effect,
+            .note = .{ .pitch = .{ .semitone = n % 12, .octave = n / 12 } },
+            .effects = .{ .{ .cmd = raw.effect, .param = 0 }, .{} },
         };
     }
 
-    fn instrumentView(ptr: *anyopaque, index: u8) fmt.InstrumentInfo {
+    fn hscLexicon(_: *anyopaque, cmd: u8, _: u16) view.EffectDesc {
+        if (cmd == 0) return .{};
+        if (cmd == 0x01) return .{ .text = "!" };
+        return switch (cmd & 0xf0) {
+            0x10, 0x20, 0xa0, 0xb0, 0xc0 => .{},
+            else => .{ .text = "s" },
+        };
+    }
+
+    pub fn channelState(self: *HscSource) view.ChannelStateBank {
+        var bank = view.ChannelStateBank{ .channels = channels };
+        for (0..channels) |i| {
+            const ch = self.channel[i];
+            bank.slots[i] = .{
+                .instrument = if (ch.instrument == 0xFF) view.instrument_none else ch.instrument,
+                .note_code = ch.note,
+                .keyed = ch.gate,
+                .vol_mod = ch.vol_mod,
+                .vol_car = ch.vol_car,
+            };
+        }
+        return bank;
+    }
+
+    fn hscOrder(ptr: *anyopaque, index: u16) view.OrderEntry {
         const self: *HscSource = @ptrCast(@alignCast(ptr));
-        const ins = self.instrument(index);
+        if (index >= order_len) return .{ .kind = .end };
+        const entry = self.order[index];
+        if (entry == 0xff or entry >= 0xb2) return .{ .kind = .end };
+        if (entry & 0x80 != 0) {
+            var dest: u16 = entry & 0x7f;
+            if (dest >= order_jump_limit) dest = 0;
+            return .{ .kind = .jump, .jump_to = dest };
+        }
+        return .{ .kind = .pattern, .pattern = entry };
+    }
+
+    fn instrumentIsUsed(self: *const HscSource, index: u8) bool {
+        const bit: u7 = @truncate(index);
+        return self.used_instruments & (@as(u128, 1) << bit) != 0;
+    }
+
+    fn markUsedInstruments(self: *HscSource) void {
+        var bits: u128 = 0;
+        for (0..channels) |i| bits |= @as(u128, 1) << @intCast(i);
+        const stored_patterns = @min(@divCeil(self.file.len -| header_bytes, pattern_bytes), max_patterns);
+        var p: u8 = 0;
+        while (p < stored_patterns) : (p += 1) {
+            var row: u8 = 0;
+            while (row < rows_per_pattern) : (row += 1) {
+                var ch: u8 = 0;
+                while (ch < channels) : (ch += 1) {
+                    const pc = self.patternCell(p, row, ch) orelse continue;
+                    if (pc.isInstrumentSet()) {
+                        bits |= @as(u128, 1) << @intCast(pc.effect & (instrument_count - 1));
+                    }
+                }
+            }
+        }
+        self.used_instruments = bits;
+    }
+
+    fn hscInstrument(ptr: *anyopaque, index: u16) view.InstrumentInfo {
+        if (index > 255) return .{};
+        const self: *HscSource = @ptrCast(@alignCast(ptr));
+        if (!self.instrumentIsUsed(@intCast(index))) return .{};
+        const ins = self.instrument(@intCast(index));
         return .{
-            .modulator = fmt.operatorParams(ins.modulator_char, ins.modulator_level, ins.modulator_ad, ins.modulator_sr, ins.modulator_wave),
-            .carrier = fmt.operatorParams(ins.carrier_char, ins.carrier_level, ins.carrier_ad, ins.carrier_sr, ins.carrier_wave),
-            .feedback = @truncate((ins.feedback_conn >> 1) & 7),
-            .additive = ins.additive(),
+            .patch = .{ .opl_2op = .{
+                .ops = .{
+                    fmt.operatorParams(ins.modulator_char, ins.modulator_level, ins.modulator_ad, ins.modulator_sr, ins.modulator_wave),
+                    fmt.operatorParams(ins.carrier_char, ins.carrier_level, ins.carrier_ad, ins.carrier_sr, ins.carrier_wave),
+                    .{},
+                    .{},
+                },
+                .op_count = 2,
+                .feedback = @truncate((ins.feedback_conn >> 1) & 7),
+                .additive = ins.additive(),
+                .fine_tune = @intCast(ins.slide),
+            } },
         };
     }
 
@@ -415,39 +536,79 @@ const HscSource = struct {
     }
 };
 
-fn load(
-    gpa: std.mem.Allocator,
-    data: []const u8,
-    ctx: fmt.LoadContext,
-) anyerror!?fmt.MusicSource {
-    const chip = ctx.chip;
-    if (data.len < header_bytes + pattern_bytes or data.len > max_file_bytes) return null;
+const PackedRun = extern struct {
+    count: u8,
+    value: u8,
 
-    const raw_patterns = (data.len - header_bytes) / pattern_bytes;
-    if (raw_patterns == 0) return null;
+    comptime {
+        if (@sizeOf(PackedRun) != 2) @compileError("HSP run must be two bytes");
+    }
+};
+
+fn unpackHsp(gpa: std.mem.Allocator, data: []const u8) error{ OutOfMemory, InvalidHsp }!?[]u8 {
+    if (data.len < @sizeOf(u16)) return null;
+    const orgsize = fmt.readU16Le(data, 0);
+    if (orgsize == 0 or orgsize > max_file_bytes) return null;
+
+    const src = data[@sizeOf(u16)..];
+    const out = try gpa.alloc(u8, orgsize);
+    errdefer gpa.free(out);
+
+    var j: usize = 0;
+    var i: usize = 0;
+    while (i + 1 < src.len and j < orgsize) : (i += 2) {
+        const run = PackedRun{ .count = src[i], .value = src[i + 1] };
+        const n: usize = run.count;
+        const room = orgsize - j;
+        const take = @min(n, room);
+        @memset(out[j..][0..take], run.value);
+        j += take;
+    }
+
+    if (j == 0) return error.InvalidHsp;
+    if (j < orgsize) return try gpa.realloc(out, j);
+    return out;
+}
+
+fn loadUnpacked(
+    gpa: std.mem.Allocator,
+    owned: []u8,
+    ctx: fmt.LoadContext,
+    label: []const u8,
+) anyerror!?fmt.MusicSource {
+    if (owned.len < min_file_bytes or owned.len > max_file_bytes) {
+        gpa.free(owned);
+        return null;
+    }
+    const raw_patterns = (owned.len - header_bytes) / pattern_bytes;
+    if (raw_patterns == 0) {
+        gpa.free(owned);
+        return null;
+    }
     const num_patterns: u8 = @intCast(@min(raw_patterns, max_patterns));
 
-    const copy = try gpa.dupe(u8, data);
-    errdefer gpa.free(copy);
-
-    const src = try gpa.create(HscSource);
-    errdefer gpa.destroy(src);
+    const src = gpa.create(HscSource) catch |err| {
+        gpa.free(owned);
+        return err;
+    };
     src.* = .{
         .sample_rate = ctx.sample_rate,
-        .file = copy,
+        .file = owned,
         .num_patterns = num_patterns,
+        .format_name = label,
     };
 
     const instr_bytes = instrument_count * instrument_size;
-    @memcpy(std.mem.asBytes(&src.instruments)[0..instr_bytes], data[0..instr_bytes]);
+    @memcpy(std.mem.asBytes(&src.instruments)[0..instr_bytes], owned[0..instr_bytes]);
     for (&src.instruments) |*ins| ins.applyLoadFixups();
 
     for (0..order_len) |i| {
-        var v = data[instr_bytes + i];
+        var v = owned[instr_bytes + i];
         if (v >= order_end_min) v = song_end_marker;
         src.order[i] = v;
     }
 
+    const chip = ctx.chip;
     chip.writeReg(Reg.waveform_select, 0x20);
     chip.writeReg(Reg.csw_note_sel, 0x40);
     chip.writeReg(Reg.rhythm, 0x00);
@@ -455,17 +616,35 @@ fn load(
         const ch: u8 = @intCast(i);
         src.setInstrument(chip, ch, ch);
     }
+    src.markUsedInstruments();
     chip.flush();
 
-    return fmt.MusicSource.init(src);
+    return fmt.MusicSource.init(src, visualizer_name);
 }
 
-pub const format = fmt.Format{
-    .name = "HSC",
-    .extensions = &.{".hsc"},
-    .visualizer = visualizer_name,
-    .load = load,
-};
+fn nameForExt(ext: []const u8) []const u8 {
+    return if (std.ascii.eqlIgnoreCase(ext, ".hsp")) "HSP" else "HSC";
+}
+
+pub fn labelForPath(path: []const u8) []const u8 {
+    return nameForExt(fmt.extensionOf(path));
+}
+
+pub fn load(
+    gpa: std.mem.Allocator,
+    data: []const u8,
+    ctx: fmt.LoadContext,
+) anyerror!?fmt.MusicSource {
+    if (std.ascii.eqlIgnoreCase(ctx.ext, ".hsp")) {
+        const unpacked = (try unpackHsp(gpa, data)) orelse return null;
+        return (try loadUnpacked(gpa, unpacked, ctx, nameForExt(ctx.ext))) orelse error.InvalidHsp;
+    }
+    if (data.len < min_file_bytes or data.len > max_file_bytes) return null;
+    const copy = try gpa.dupe(u8, data);
+    return loadUnpacked(gpa, copy, ctx, nameForExt(ctx.ext));
+}
+
+pub const format = fmt.Format.init(@This());
 
 // --- tests -------------------------------------------------------------------
 
@@ -494,11 +673,10 @@ test "order end markers collapse to 0xff at load" {
     var src = (try fmt.load(gpa, "t.hsc", &data, .{ .sample_rate = 44100, .chip = chip_adapter.fromOpal(&chip) })).?;
     defer src.deinit(gpa);
 
-    const view = src.trackerView().?;
-    try std.testing.expectEqual(@as(u8, 0), view.order[0]);
-    try std.testing.expectEqual(@as(u8, 0xFF), view.order[1]);
-    try std.testing.expectEqual(@as(u8, 0x90), view.order[2]);
-    try std.testing.expectEqual(@as(u8, 5), view.order[3]);
+    const ov = src.views().order.?;
+    try std.testing.expectEqual(.pattern, ov.entry(ov.ctx, 0).kind);
+    try std.testing.expectEqual(@as(u16, 0), ov.entry(ov.ctx, 0).pattern);
+    try std.testing.expectEqual(.end, ov.entry(ov.ctx, 1).kind);
 }
 
 test "a measured duration does not cost HSC its own capabilities" {
@@ -517,8 +695,9 @@ test "a measured duration does not cost HSC its own capabilities" {
     try std.testing.expect(src.duration_override != null);
     try std.testing.expect(src.durationFrames().? > 0);
 
-    try std.testing.expect(src.trackerView() != null);
-    try std.testing.expect(src.pos() != null);
+    try std.testing.expect(src.views().pattern != null);
+    try std.testing.expect(src.playhead() != null);
+    try std.testing.expect(src.channelState() != null);
     try std.testing.expect(src.getTickRate() == null);
 }
 
@@ -538,28 +717,28 @@ test "tracker cell decode matches playRow's note encoding" {
     };
     const ptr: *anyopaque = &src;
 
-    const c0 = HscSource.cell(ptr, 0, 0, 0);
-    try std.testing.expectEqual(fmt.TrackerCell.Kind.note, c0.kind);
-    try std.testing.expectEqual(@as(u8, 3), c0.semitone);
-    try std.testing.expectEqual(@as(u8, 4), c0.octave);
-    try std.testing.expectEqual(@as(u8, 0x12), c0.arg);
+    const c0 = HscSource.viewCell(ptr, 0, 0, 0);
+    try std.testing.expectEqual(view.Note{ .pitch = .{ .semitone = 3, .octave = 4 } }, c0.note);
+    try std.testing.expectEqual(@as(u8, 0x12), c0.effects[0].cmd);
 
-    const c1 = HscSource.cell(ptr, 0, 0, 1);
-    try std.testing.expectEqual(fmt.TrackerCell.Kind.set_instrument, c1.kind);
-    try std.testing.expectEqual(@as(u8, 5), c1.arg);
+    const c1 = HscSource.viewCell(ptr, 0, 0, 1);
+    try std.testing.expect(view.packedEventIsInstrumentSet(c1));
+    try std.testing.expectEqual(@as(u16, 5), c1.instrument.?);
 
-    const c2 = HscSource.cell(ptr, 0, 0, 2);
-    try std.testing.expectEqual(fmt.TrackerCell.Kind.note_off, c2.kind);
+    const c2 = HscSource.viewCell(ptr, 0, 0, 2);
+    try std.testing.expectEqual(view.Note.off, c2.note);
 
-    const c3 = HscSource.cell(ptr, 0, 0, 3);
-    try std.testing.expectEqual(fmt.TrackerCell.Kind.effect_only, c3.kind);
-    try std.testing.expectEqual(@as(u8, 0xF3), c3.arg);
+    const c3 = HscSource.viewCell(ptr, 0, 0, 3);
+    try std.testing.expectEqual(view.Note.none, c3.note);
+    try std.testing.expectEqual(@as(u8, 0xF3), c3.effects[0].cmd);
 
-    const c4 = HscSource.cell(ptr, 0, 0, 4);
-    try std.testing.expectEqual(fmt.TrackerCell.Kind.empty, c4.kind);
+    const c4 = HscSource.viewCell(ptr, 0, 0, 4);
+    try std.testing.expectEqual(view.Note.none, c4.note);
+    try std.testing.expect(c4.instrument == null);
+    try std.testing.expectEqual(@as(u8, 0), c4.effects[0].cmd);
 
-    const oob = HscSource.cell(ptr, 49, 63, 8);
-    try std.testing.expectEqual(fmt.TrackerCell.Kind.empty, oob.kind);
+    const oob = HscSource.viewCell(ptr, 49, 63, 8);
+    try std.testing.expectEqual(view.Note.none, oob.note);
 }
 
 test "instrument decode splits OPL operator fields" {
@@ -582,26 +761,54 @@ test "instrument decode splits OPL operator fields" {
         .carrier_wave = 0x02,
         .modulator_wave = 0x03,
     };
-    const ins = HscSource.instrumentView(&src, 7);
-    try std.testing.expect(ins.carrier.tremolo);
-    try std.testing.expect(ins.carrier.vibrato);
-    try std.testing.expect(ins.carrier.sustaining);
-    try std.testing.expect(!ins.carrier.ksr);
-    try std.testing.expectEqual(@as(u4, 1), ins.carrier.mult);
-    try std.testing.expectEqual(@as(u2, 2), ins.carrier.ksl);
-    try std.testing.expectEqual(@as(u6, 10), ins.carrier.level);
-    try std.testing.expectEqual(@as(u4, 15), ins.carrier.attack);
-    try std.testing.expectEqual(@as(u4, 2), ins.carrier.decay);
-    try std.testing.expectEqual(@as(u4, 7), ins.carrier.sustain);
-    try std.testing.expectEqual(@as(u4, 9), ins.carrier.release);
-    try std.testing.expectEqual(@as(u3, 2), ins.carrier.wave);
-    try std.testing.expect(!ins.modulator.tremolo);
-    try std.testing.expect(ins.modulator.ksr);
-    try std.testing.expectEqual(@as(u4, 5), ins.modulator.mult);
-    try std.testing.expectEqual(@as(u6, 63), ins.modulator.level);
-    try std.testing.expectEqual(@as(u3, 3), ins.modulator.wave);
-    try std.testing.expectEqual(@as(u3, 5), ins.feedback);
-    try std.testing.expect(ins.additive);
+    const ins = HscSource.hscInstrument(&src, 7);
+    const patch = ins.opl();
+    try std.testing.expect(patch.ops[1].tremolo);
+    try std.testing.expect(patch.ops[1].vibrato);
+    try std.testing.expect(patch.ops[1].sustaining);
+    try std.testing.expect(!patch.ops[1].ksr);
+    try std.testing.expectEqual(@as(u4, 1), patch.ops[1].mult);
+    try std.testing.expectEqual(@as(u2, 2), patch.ops[1].ksl);
+    try std.testing.expectEqual(@as(u6, 10), patch.ops[1].level);
+    try std.testing.expectEqual(@as(u4, 15), patch.ops[1].attack);
+    try std.testing.expectEqual(@as(u4, 2), patch.ops[1].decay);
+    try std.testing.expectEqual(@as(u4, 7), patch.ops[1].sustain);
+    try std.testing.expectEqual(@as(u4, 9), patch.ops[1].release);
+    try std.testing.expectEqual(@as(u3, 2), patch.ops[1].wave);
+    try std.testing.expect(!patch.ops[0].tremolo);
+    try std.testing.expect(patch.ops[0].ksr);
+    try std.testing.expectEqual(@as(u4, 5), patch.ops[0].mult);
+    try std.testing.expectEqual(@as(u6, 63), patch.ops[0].level);
+    try std.testing.expectEqual(@as(u3, 3), patch.ops[0].wave);
+    try std.testing.expectEqual(@as(u3, 5), patch.feedback);
+    try std.testing.expect(patch.additive);
+}
+
+test "hsc instrument set only in a trailing partial pattern plays and is listed as used" {
+    const gpa = std.testing.allocator;
+    var data: [header_bytes + pattern_bytes + 600]u8 = @splat(0);
+    const order_at = instrument_count * instrument_size;
+    data[order_at + 0] = 0;
+    data[order_at + 1] = 1;
+    data[order_at + 2] = song_end_marker;
+    data[header_bytes + pattern_bytes + 0] = 0x80;
+    data[header_bytes + pattern_bytes + 1] = 20;
+
+    const src = (try load(gpa, &data, .{
+        .sample_rate = 44100,
+        .chip = fmt.noop_chip,
+        .ext = ".hsc",
+        .name = "t.hsc",
+    })).?;
+    defer src.deinit(gpa);
+    try std.testing.expectEqual(@as(u16, 1), src.views().pattern.?.num_patterns);
+
+    for (0..130) |_| _ = src.step(fmt.noop_chip);
+    try std.testing.expectEqual(@as(u16, 20), src.channelState().?.slots[0].instrument);
+
+    const bank = src.views().instruments.?;
+    try std.testing.expect(bank.get(bank.ctx, 20).patch == .opl_2op);
+    try std.testing.expect(bank.get(bank.ctx, 21).patch == .empty);
 }
 
 test "hsc reports no title so the shell falls back to the file name" {
@@ -616,6 +823,7 @@ test "hsc reports no title so the shell falls back to the file name" {
     })).?;
     defer src.deinit(gpa);
     try std.testing.expect(src.info().title == null);
+    try std.testing.expectEqualStrings("HSC", src.info().format_name);
 }
 
 test "hsc instrument-set with zero slide leaves the key off" {
@@ -658,12 +866,14 @@ test "hsc instrument-set with zero slide leaves the key off" {
 
     _ = src.step(rec.chip());
     try std.testing.expect(rec.b0[0] & key_on_bit != 0);
+    try std.testing.expect(src.channelState().?.slots[0].keyed);
     const a0 = rec.a0[0];
 
     _ = src.step(rec.chip());
     _ = src.step(rec.chip());
     try std.testing.expectEqual(a0, rec.a0[0]);
     try std.testing.expectEqual(@as(u8, 0), rec.b0[0]);
+    try std.testing.expect(!src.channelState().?.slots[0].keyed);
 }
 
 test "hsc instrument-set with slide rewrites the held pitch" {
@@ -876,7 +1086,7 @@ test "hsc 3x sets speed like Fx matching the NEO player fallthrough" {
             })).?;
             defer src.deinit(gpa);
             _ = src.step(chip_adapter.fromOpal(&chip));
-            return src.pos().?.speed;
+            return @intCast(src.playhead().?.speed);
         }
     };
     try std.testing.expectEqual(@as(u8, 3), try Helper.speedAfterEffect(0x32));
@@ -983,7 +1193,7 @@ test "hsc 6x sets speed and leaves feedback alone" {
     defer src.deinit(gpa);
     _ = src.step(rec.chip());
     try std.testing.expectEqual(@as(u8, 0x01), rec.c0[0]);
-    try std.testing.expectEqual(@as(u8, 9), src.pos().?.speed);
+    try std.testing.expectEqual(@as(u8, 9), src.playhead().?.speed);
 }
 
 test "hsc An replaces carrier KSL bits" {
@@ -1020,98 +1230,61 @@ test "hsc An replaces carrier KSL bits" {
     try std.testing.expectEqual(@as(u8, 0x10), rec.lvl);
 }
 
-test "ab render fmtrk2 wav" {
+fn packHsp(gpa: std.mem.Allocator, plain: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+    var size: [2]u8 = undefined;
+    std.mem.writeInt(u16, &size, @intCast(plain.len), .little);
+    try out.appendSlice(gpa, &size);
+    var i: usize = 0;
+    while (i < plain.len) {
+        const v = plain[i];
+        var n: u8 = 1;
+        while (i + @as(usize, n) < plain.len and plain[i + n] == v and n < 255) n += 1;
+        try out.append(gpa, n);
+        try out.append(gpa, v);
+        i += n;
+    }
+    return out.toOwnedSlice(gpa);
+}
+
+fn loadHsp(gpa: std.mem.Allocator, blob: []const u8) !fmt.MusicSource {
+    return (try load(gpa, blob, .{
+        .sample_rate = 44100,
+        .chip = fmt.noop_chip,
+        .ext = ".hsp",
+        .name = "t.hsp",
+    })) orelse error.TestUnexpectedResult;
+}
+
+test "hsp pack then unpack restores the bytes" {
     const gpa = std.testing.allocator;
-    var threaded: std.Io.Threaded = .init(gpa, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
-    std.Io.Dir.cwd().access(io, "tmp/hsc-ab/render.flag", .{}) catch return error.SkipZigTest;
+    const plain = [_]u8{ 0, 0, 0, 1, 1, 2, 255, 255, 255 };
+    const blob = try packHsp(gpa, &plain);
+    defer gpa.free(blob);
+    const out = (try unpackHsp(gpa, blob)).?;
+    defer gpa.free(out);
+    try std.testing.expectEqualSlices(u8, &plain, out);
+}
 
-    const path = "tmp/fmtrk2.hsc";
-    const data = std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(max_file_bytes)) catch return error.SkipZigTest;
-    defer gpa.free(data);
-
-    const LogChip = struct {
-        opal: *opal.Opal,
-        gpa: std.mem.Allocator,
-        events: std.ArrayList(u8) = .empty,
-        frames: u64 = 0,
-
-        fn write(ptr: *anyopaque, reg: u16, val: u8) void {
-            const self: *@This() = @ptrCast(@alignCast(ptr));
-            self.opal.writeRegBuffered(reg, val);
-            var line_buf: [48]u8 = undefined;
-            const line = std.fmt.bufPrint(&line_buf, "{d} {x:0>2} {x:0>2}\n", .{ self.frames, reg, val }) catch return;
-            self.events.appendSlice(self.gpa, line) catch {};
-        }
-        fn flush(ptr: *anyopaque) void {
-            const self: *@This() = @ptrCast(@alignCast(ptr));
-            self.opal.flushWriteBuf();
-        }
-        const vtable = fmt.Chip.VTable{ .writeReg = write, .flush = flush };
-        fn chip(self: *@This()) fmt.Chip {
-            return .{ .ptr = self, .vtable = &vtable };
-        }
-    };
-
-    const sample_rate: u32 = 44100;
-    const seconds: u32 = 45;
-    var chip_store = try gpa.create(opal.Opal);
-    defer gpa.destroy(chip_store);
-    chip_store.* = opal.Opal.init(@intCast(sample_rate));
-    var log = LogChip{ .opal = chip_store, .gpa = gpa };
-    defer log.events.deinit(gpa);
-    const chip = log.chip();
-
-    var src = (try fmt.load(gpa, path, data, .{
-        .sample_rate = sample_rate,
-        .chip = chip,
-        .ext = ".hsc",
-        .name = "fmtrk2.hsc",
-    })).?;
+test "hsp loads a packed HSC as HSP" {
+    const gpa = std.testing.allocator;
+    var plain: [min_file_bytes]u8 = @splat(0);
+    const blob = try packHsp(gpa, &plain);
+    defer gpa.free(blob);
+    const src = try loadHsp(gpa, blob);
     defer src.deinit(gpa);
 
-    const frames: usize = @as(usize, sample_rate) * seconds;
-    const pcm = try gpa.alloc(i16, frames * 2);
-    defer gpa.free(pcm);
+    const inf = src.info();
+    try std.testing.expectEqualStrings("HSP", inf.format_name);
+    try std.testing.expect(inf.title == null);
+    try std.testing.expectEqualStrings(visualizer_name, inf.visualizer);
+    try std.testing.expect(src.views().pattern != null);
+    try std.testing.expect(src.playhead() != null);
+}
 
-    var wait: u64 = 0;
-    var written: usize = 0;
-    while (written < frames) {
-        if (wait == 0) {
-            const r = src.step(chip);
-            wait = r.frames;
-            if (r.frames == 0) break;
-        }
-        const n: usize = @intCast(@min(wait, frames - written));
-        chip_store.render(pcm[written * 2 .. (written + n) * 2]);
-        wait -= n;
-        written += n;
-        log.frames += n;
-    }
-
-    var hdr: [44]u8 = undefined;
-    const bytes: u32 = @intCast(written * 4);
-    @memcpy(hdr[0..4], "RIFF");
-    std.mem.writeInt(u32, hdr[4..8], 36 + bytes, .little);
-    @memcpy(hdr[8..12], "WAVE");
-    @memcpy(hdr[12..16], "fmt ");
-    std.mem.writeInt(u32, hdr[16..20], 16, .little);
-    std.mem.writeInt(u16, hdr[20..22], 1, .little);
-    std.mem.writeInt(u16, hdr[22..24], 2, .little);
-    std.mem.writeInt(u32, hdr[24..28], sample_rate, .little);
-    std.mem.writeInt(u32, hdr[28..32], sample_rate * 4, .little);
-    std.mem.writeInt(u16, hdr[32..34], 4, .little);
-    std.mem.writeInt(u16, hdr[34..36], 16, .little);
-    @memcpy(hdr[36..40], "data");
-    std.mem.writeInt(u32, hdr[40..44], bytes, .little);
-
-    var file = try std.Io.Dir.cwd().createFile(io, "tmp/hsc-ab/fmtrk2-sehnsucht.wav", .{});
-    defer file.close(io);
-    try file.writePositionalAll(io, &hdr, 0);
-    try file.writePositionalAll(io, std.mem.sliceAsBytes(pcm[0 .. written * 2]), hdr.len);
-
-    var opl = try std.Io.Dir.cwd().createFile(io, "tmp/hsc-ab/fmtrk2-sehnsucht.opl.txt", .{});
-    defer opl.close(io);
-    try opl.writePositionalAll(io, log.events.items, 0);
+test "hsc playlist labels follow the path extension" {
+    try std.testing.expectEqualStrings("HSC", labelForPath("tune.hsc"));
+    try std.testing.expectEqualStrings("HSP", labelForPath("tune.hsp"));
+    try std.testing.expectEqualStrings("HSP", labelForPath("http://x/SATNIGHT.HSP"));
 }
